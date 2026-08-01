@@ -10,6 +10,12 @@ pub struct Project {
     pub path: PathBuf,
 }
 
+impl Project {
+    pub fn is_ghost(&self) -> bool {
+        !self.path.is_dir()
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Registry {
     pub projects: Vec<Project>,
@@ -69,6 +75,15 @@ impl Registry {
         Ok(())
     }
 
+    pub fn upsert(&mut self, project: Project) -> Option<Project> {
+        if let Some(idx) = self.projects.iter().position(|p| p.name == project.name) {
+            Some(std::mem::replace(&mut self.projects[idx], project))
+        } else {
+            self.projects.push(project);
+            None
+        }
+    }
+
     pub fn remove(&mut self, name: &str) -> Result<Project> {
         let idx = self
             .projects
@@ -76,6 +91,14 @@ impl Registry {
             .position(|p| p.name == name)
             .with_context(|| format!("project `{name}` is not registered"))?;
         Ok(self.projects.remove(idx))
+    }
+
+    pub fn take_ghosts(&mut self) -> Vec<Project> {
+        let projects = std::mem::take(&mut self.projects);
+        let (ghosts, keep): (Vec<_>, Vec<_>) =
+            projects.into_iter().partition(Project::is_ghost);
+        self.projects = keep;
+        ghosts
     }
 }
 
@@ -143,6 +166,23 @@ mod tests {
     }
 
     #[test]
+    fn upsert_replaces_existing() {
+        let mut registry = Registry::default();
+        registry
+            .add(Project {
+                name: "a".into(),
+                path: PathBuf::from("/old"),
+            })
+            .unwrap();
+        let prev = registry.upsert(Project {
+            name: "a".into(),
+            path: PathBuf::from("/new"),
+        });
+        assert_eq!(prev.unwrap().path, PathBuf::from("/old"));
+        assert_eq!(registry.get("a").unwrap().path, PathBuf::from("/new"));
+    }
+
+    #[test]
     fn remove_existing_project() {
         let mut registry = Registry::default();
         registry
@@ -161,5 +201,37 @@ mod tests {
         let mut registry = Registry::default();
         let err = registry.remove("missing").unwrap_err();
         assert!(err.to_string().contains("not registered"));
+    }
+
+    #[test]
+    fn take_ghosts_keeps_valid_dirs() {
+        let tmp = std::env::temp_dir().join(format!(
+            "neals-ghost-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&tmp).unwrap();
+        let mut registry = Registry::default();
+        registry
+            .add(Project {
+                name: "alive".into(),
+                path: tmp.clone(),
+            })
+            .unwrap();
+        registry
+            .add(Project {
+                name: "dead".into(),
+                path: tmp.join("does-not-exist"),
+            })
+            .unwrap();
+        let ghosts = registry.take_ghosts();
+        assert_eq!(ghosts.len(), 1);
+        assert_eq!(ghosts[0].name, "dead");
+        assert_eq!(registry.projects.len(), 1);
+        assert_eq!(registry.projects[0].name, "alive");
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

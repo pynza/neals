@@ -10,5 +10,6 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+clap_complete = { version = "4.6.8", features = ["unstable-dynamic"] }
 comfy-table = "7"
 neals-common = { path = "../common" }

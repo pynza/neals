@@ -1,14 +1,23 @@
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::{
+    engine::{ArgValueCompleter, CompletionCandidate},
+    CompleteEnv,
+};
 use comfy_table::{Cell, Table};
-use neals_common::{Project, Registry};
+use neals_common::{resolve_project_name, Project, ProjectName, Registry};
 use std::env;
+use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 use std::process::{Command, ExitCode, ExitStatus, Stdio};
 
 #[derive(Parser)]
 #[command(name = "neals", about = "Local platform orchestrator for devenv projects")]
 struct Cli {
+    /// Skip confirmation prompts
+    #[arg(short = 'y', long = "yes", global = true)]
+    yes: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -22,24 +31,55 @@ enum Commands {
     /// Remove a project from the registry
     Unregister {
         /// Project name as shown by `neals list`
+        #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
     },
+    /// Remove registry entries whose paths no longer exist
+    Prune,
     /// Open an interactive devenv shell for a registered project
     Bash {
         /// Project name as shown by `neals list`
+        #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
     },
     /// Run a command inside a registered project's devenv shell
     Exec {
         /// Project name as shown by `neals list`
+        #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
         /// Command and args after `--`, e.g. `neals exec app -- npm test`
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<String>,
     },
+    /// Print shell completion setup for bash, zsh, fish, elvish, or powershell
+    Completions {
+        shell: CompletionShell,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CompletionShell {
+    Bash,
+    Elvish,
+    Fish,
+    Powershell,
+    Zsh,
+}
+
+fn complete_projects(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
+    let prefix = current.to_string_lossy();
+    Registry::load()
+        .map(|r| r.projects)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| p.name.starts_with(prefix.as_ref()))
+        .map(|p| CompletionCandidate::new(p.name))
+        .collect()
 }
 
 fn main() -> ExitCode {
+    CompleteEnv::with_factory(Cli::command).complete();
+
     match run() {
         Ok(code) => code,
         Err(err) => {
@@ -53,7 +93,7 @@ fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Register => {
-            cmd_register()?;
+            cmd_register(cli.yes)?;
             Ok(ExitCode::SUCCESS)
         }
         Commands::List => {
@@ -64,23 +104,78 @@ fn run() -> Result<ExitCode> {
             cmd_unregister(&project)?;
             Ok(ExitCode::SUCCESS)
         }
+        Commands::Prune => {
+            cmd_prune(cli.yes)?;
+            Ok(ExitCode::SUCCESS)
+        }
         Commands::Bash { project } => cmd_bash(&project),
         Commands::Exec { project, command } => cmd_exec(&project, &command),
+        Commands::Completions { shell } => {
+            cmd_completions(shell)?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 
-fn cmd_register() -> Result<()> {
+fn confirm(prompt: &str, yes: bool) -> Result<bool> {
+    if yes {
+        return Ok(true);
+    }
+    if !io::stdin().is_terminal() {
+        bail!("refusing to prompt without a TTY; re-run with --yes");
+    }
+    eprint!("{prompt} [y/N] ");
+    io::stderr().flush().ok();
+    let mut line = String::new();
+    io::stdin()
+        .read_line(&mut line)
+        .context("failed to read confirmation")?;
+    let answer = line.trim();
+    Ok(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
+}
+
+fn cmd_register(yes: bool) -> Result<()> {
     let cwd = env::current_dir().context("failed to get current directory")?;
     let path = cwd
         .canonicalize()
         .with_context(|| format!("failed to resolve path {}", cwd.display()))?;
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .context("current directory has no valid name")?
-        .to_string();
+
+    let resolved = resolve_project_name(&path)?;
+    let name = match &resolved {
+        ProjectName::FromDevenv(name) => name.clone(),
+        ProjectName::Fallback(name) => {
+            eprintln!("warning: no `neals.name` in devenv.nix; falling back to folder name `{name}`");
+            eprintln!("         services will be reachable at <service>.{name}.localhost");
+            if !confirm("Register using this folder name?", yes)? {
+                bail!("registration cancelled");
+            }
+            name.clone()
+        }
+    };
 
     let mut registry = Registry::load()?;
+    if let Some(existing) = registry.get(&name) {
+        if existing.path == path {
+            println!("already registered `{name}` -> {}", path.display());
+            return Ok(());
+        }
+        eprintln!(
+            "warning: project `{name}` is already registered at {}",
+            existing.path.display()
+        );
+        eprintln!("         override with {}?", path.display());
+        if !confirm("Override existing registration?", yes)? {
+            bail!("registration cancelled");
+        }
+        registry.upsert(Project {
+            name: name.clone(),
+            path: path.clone(),
+        });
+        registry.save()?;
+        println!("overrode `{name}` -> {}", path.display());
+        return Ok(());
+    }
+
     registry.add(Project {
         name: name.clone(),
         path: path.clone(),
@@ -98,11 +193,17 @@ fn cmd_list() -> Result<()> {
     }
 
     let mut table = Table::new();
-    table.set_header(vec!["Name", "Path"]);
+    table.set_header(vec!["Name", "Path", "Status"]);
     for project in &registry.projects {
+        let status = if project.is_ghost() {
+            "ghost"
+        } else {
+            "ok"
+        };
         table.add_row(vec![
             Cell::new(&project.name),
             Cell::new(project.path.display().to_string()),
+            Cell::new(status),
         ]);
     }
     println!("{table}");
@@ -118,6 +219,47 @@ fn cmd_unregister(name: &str) -> Result<()> {
         removed.name,
         removed.path.display()
     );
+    Ok(())
+}
+
+fn cmd_prune(yes: bool) -> Result<()> {
+    let mut registry = Registry::load()?;
+    let ghosts: Vec<_> = registry
+        .projects
+        .iter()
+        .filter(|p| p.is_ghost())
+        .cloned()
+        .collect();
+    if ghosts.is_empty() {
+        println!("nothing to prune");
+        return Ok(());
+    }
+
+    eprintln!("ghost projects:");
+    for project in &ghosts {
+        eprintln!("  {} -> {}", project.name, project.path.display());
+    }
+    if !confirm(&format!("Remove {} ghost project(s)?", ghosts.len()), yes)? {
+        bail!("prune cancelled");
+    }
+
+    let removed = registry.take_ghosts();
+    registry.save()?;
+    println!("pruned {} project(s)", removed.len());
+    Ok(())
+}
+
+fn cmd_completions(shell: CompletionShell) -> Result<()> {
+    let line = match shell {
+        CompletionShell::Bash => "source <(COMPLETE=bash neals)",
+        CompletionShell::Zsh => "source <(COMPLETE=zsh neals)",
+        CompletionShell::Fish => "COMPLETE=fish neals | source",
+        CompletionShell::Elvish => "eval (E:COMPLETE=elvish neals | slurp)",
+        CompletionShell::Powershell => {
+            "$env:COMPLETE = \"powershell\"; neals | Out-String | Invoke-Expression; Remove-Item Env:\\COMPLETE"
+        }
+    };
+    println!("{line}");
     Ok(())
 }
 
