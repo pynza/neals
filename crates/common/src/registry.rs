@@ -131,8 +131,8 @@ mod tests {
         let mut registry = Registry::default();
         registry
             .add(Project {
-                name: "ferrari".into(),
-                path: PathBuf::from("/home/dev/ferrari"),
+                name: "demo".into(),
+                path: PathBuf::from("/home/dev/demo"),
             })
             .unwrap();
         registry.save_to(&path).unwrap();
@@ -140,8 +140,8 @@ mod tests {
         let loaded = Registry::load_from(&path).unwrap();
         assert_eq!(loaded, registry);
         assert_eq!(
-            loaded.get("ferrari").unwrap().path,
-            PathBuf::from("/home/dev/ferrari")
+            loaded.get("demo").unwrap().path,
+            PathBuf::from("/home/dev/demo")
         );
         assert!(!path.with_file_name("projects.json.tmp").exists());
         let _ = fs::remove_dir_all(&tmp);

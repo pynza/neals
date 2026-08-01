@@ -90,10 +90,10 @@ mod tests {
     fn parse_double_quoted_name() {
         let src = r#"
           { pkgs, ... }: {
-            neals.name = "ferrari";
+            neals.name = "demo";
           }
         "#;
-        assert_eq!(parse_neals_name(src).as_deref(), Some("ferrari"));
+        assert_eq!(parse_neals_name(src).as_deref(), Some("demo"));
     }
 
     #[test]
@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn valid_names() {
-        assert!(is_valid_project_name("ferrari"));
+        assert!(is_valid_project_name("demo"));
         assert!(is_valid_project_name("my-app2"));
         assert!(!is_valid_project_name("MyApp"));
         assert!(!is_valid_project_name("-x"));
