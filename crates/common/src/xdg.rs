@@ -45,6 +45,10 @@ pub fn projects_file() -> Result<PathBuf> {
     Ok(config_dir()?.join("projects.json"))
 }
 
+pub fn daemon_socket() -> Result<PathBuf> {
+    Ok(runtime_dir()?.join("nealsd.sock"))
+}
+
 pub fn ensure_dir(path: &Path) -> Result<()> {
     fs::create_dir_all(path)
         .with_context(|| format!("failed to create directory {}", path.display()))?;
@@ -82,6 +86,12 @@ mod tests {
     #[test]
     fn runtime_dir_falls_back_to_tmp() {
         assert_eq!(runtime_dir_with(None), PathBuf::from("/tmp/neals"));
+    }
+
+    #[test]
+    fn daemon_socket_joins_runtime_dir() {
+        let runtime = runtime_dir_with(Some(OsString::from("/run/user/1000")));
+        assert_eq!(runtime.join("nealsd.sock"), PathBuf::from("/run/user/1000/neals/nealsd.sock"));
     }
 
     #[test]
