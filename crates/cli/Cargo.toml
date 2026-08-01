@@ -1,0 +1,14 @@
+[package]
+name = "neals"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "neals"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+comfy-table = "7"
+neals-common = { path = "../common" }

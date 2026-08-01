@@ -4,6 +4,7 @@
 .direnv/
 .result
 result
+.vscode/
 .cursor/
 *.swp
 *~
