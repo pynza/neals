@@ -22,32 +22,28 @@ impl ProjectName {
 
 pub fn parse_neals_name(src: &str) -> Option<String> {
     const KEY: &str = "neals.name";
-    let mut search = src;
-    while let Some(idx) = search.find(KEY) {
-        let after_key = &search[idx + KEY.len()..];
-        let trimmed = after_key.trim_start();
-        let Some(after_eq) = trimmed.strip_prefix('=') else {
-            search = after_key;
-            continue;
-        };
-        let after_eq = after_eq.trim_start();
-        let quote = match after_eq.chars().next() {
-            Some('"') | Some('\'') => after_eq.chars().next().unwrap(),
-            _ => {
-                search = after_key;
+    for line in src.lines() {
+        let code_part = line.split('#').next().unwrap_or(line);
+        if let Some(idx) = code_part.find(KEY) {
+            let after_key = &code_part[idx + KEY.len()..];
+            let trimmed = after_key.trim_start();
+            let Some(after_eq) = trimmed.strip_prefix('=') else {
                 continue;
+            };
+            let after_eq = after_eq.trim_start();
+            let quote = match after_eq.chars().next() {
+                Some(q @ '"') | Some(q @ '\'') => q,
+                _ => continue,
+            };
+            let body = &after_eq[quote.len_utf8()..];
+            let Some(end) = body.find(quote) else {
+                continue;
+            };
+            let name = &body[..end];
+            if is_valid_project_name(name) {
+                return Some(name.to_string());
             }
-        };
-        let body = &after_eq[quote.len_utf8()..];
-        let Some(end) = body.find(quote) else {
-            search = after_key;
-            continue;
-        };
-        let name = &body[..end];
-        if is_valid_project_name(name) {
-            return Some(name.to_string());
         }
-        search = after_key;
     }
     None
 }
