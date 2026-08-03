@@ -1,8 +1,10 @@
+pub mod client;
 pub mod devenv;
 pub mod ipc;
 pub mod registry;
 pub mod xdg;
 
+pub use client::call_daemon;
 pub use devenv::{parse_neals_name, resolve_project_name, ProjectName};
 pub use ipc::{
     decode_request, decode_response, encode_request, encode_response, ProjectRuntime, Request,

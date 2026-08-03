@@ -3,13 +3,26 @@
 ```bash
 nix develop   # rustc/cargo via rust-overlay on nixos-24.11
 cargo test
-cargo run -p neals -- --help
-cargo run -p nealsd          # foreground daemon (IPC on nealsd.sock)
+cargo build -p neals -p nealsd
 ```
 
 Project name: set `neals.name = "my-app";` in `devenv.nix` (folder name is fallback).
 
-Shell completions (dynamic project names):
+## Daemon + project lifecycle
+
+`neals up` / `down` / `status` talk to `nealsd` over a UNIX socket. If the daemon is not running, the CLI starts it automatically (logs in `~/.local/state/neals/nealsd.log`).
+
+```bash
+cargo run -p neals -- register
+cargo run -p neals -- up my-app
+cargo run -p neals -- status
+cargo run -p neals -- logs my-app    # last 100 lines
+cargo run -p neals -- down my-app
+```
+
+You can also run the daemon in the foreground: `cargo run -p nealsd`.
+
+## Shell completions
 
 ```bash
 # bash
