@@ -4,6 +4,7 @@
 nix develop   # rustc/cargo via rust-overlay on nixos-24.11
 cargo test
 cargo run -p neals -- --help
+cargo run -p nealsd          # foreground daemon (IPC on nealsd.sock)
 ```
 
 Project name: set `neals.name = "my-app";` in `devenv.nix` (folder name is fallback).
