@@ -1,5 +1,6 @@
+use crate::caddy::{ensure_neals_symlinks, project_runtime_dir};
 use crate::state::{AppState, RunningProject};
-use neals_common::{ensure_dir, state_dir, Registry, Request, Response};
+use neals_common::{ensure_dir, read_neals_routes, state_dir, Registry, Request, Response};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -53,6 +54,23 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
         project
     };
 
+    let routes = read_neals_routes(&project.path).map_err(|e| e.to_string())?;
+
+    let runtime_proj = project_runtime_dir(name).map_err(|e| e.to_string())?;
+    ensure_dir(&runtime_proj).map_err(|e| e.to_string())?;
+    ensure_neals_symlinks(&project.path, name, &routes).map_err(|e| e.to_string())?;
+
+    {
+        let mut state = state.lock().await;
+        let mut snapshot = state.route_snapshot();
+        snapshot.push((name.to_string(), routes.clone()));
+        state
+            .caddy
+            .apply_routes(&snapshot)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
     let log_path = project_log_path(name).map_err(|e| e.to_string())?;
     let log_file = std::fs::OpenOptions::new()
         .create(true)
@@ -67,6 +85,7 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
     let mut cmd = Command::new(&program);
     cmd.args(&args)
         .current_dir(&project.path)
+        .env("NEALS_RUNTIME", &runtime_proj)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_err));
@@ -76,16 +95,30 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
         cmd.process_group(0);
     }
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("failed to spawn `{program}`: {e}"))?;
-    let pid = child
-        .id()
-        .ok_or_else(|| format!("spawned `{program}` has no pid"))?;
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            let mut state = state.lock().await;
+            let snapshot = state.route_snapshot();
+            let _ = state.caddy.apply_routes(&snapshot).await;
+            return Err(format!("failed to spawn `{program}`: {e}"));
+        }
+    };
+    let pid = match child.id() {
+        Some(pid) => pid,
+        None => {
+            let mut state = state.lock().await;
+            let snapshot = state.route_snapshot();
+            let _ = state.caddy.apply_routes(&snapshot).await;
+            return Err(format!("spawned `{program}` has no pid"));
+        }
+    };
 
     let mut state = state.lock().await;
     if state.is_running(name) {
         stop_spawned(pid, &mut child).await;
+        let snapshot = state.route_snapshot();
+        let _ = state.caddy.apply_routes(&snapshot).await;
         return Err(format!("project `{name}` is already running"));
     }
     state.projects.insert(
@@ -95,6 +128,8 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
             child,
             pid,
             started_at: Instant::now(),
+            routes,
+            project_path: project.path,
         },
     );
     Ok(())

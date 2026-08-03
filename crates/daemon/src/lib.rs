@@ -1,3 +1,4 @@
+mod caddy;
 mod handler;
 mod state;
 
@@ -5,6 +6,7 @@ pub use handler::handle_request;
 pub use state::AppState;
 
 use anyhow::{bail, Context, Result};
+use caddy::CaddyManager;
 use neals_common::{
     daemon_socket, decode_request, encode_response, ensure_dir, runtime_dir,
 };
@@ -25,7 +27,13 @@ pub async fn run() -> Result<()> {
         .with_context(|| format!("failed to bind {}", sock.display()))?;
     eprintln!("nealsd listening on {}", sock.display());
 
-    let state = Arc::new(Mutex::new(AppState::default()));
+    let caddy = CaddyManager::start()
+        .await
+        .context("failed to start caddy")?;
+    let state = Arc::new(Mutex::new(AppState {
+        projects: Default::default(),
+        caddy,
+    }));
     let state_accept = Arc::clone(&state);
 
     let accept_loop = async move {

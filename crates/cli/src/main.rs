@@ -330,12 +330,18 @@ fn cmd_status() -> Result<()> {
                 return Ok(());
             }
             let mut table = Table::new();
-            table.set_header(vec!["Name", "PID", "Uptime"]);
+            table.set_header(vec!["Name", "PID", "Uptime", "Routes"]);
             for project in projects {
+                let routes = if project.routes.is_empty() {
+                    "-".into()
+                } else {
+                    project.routes.join(", ")
+                };
                 table.add_row(vec![
                     Cell::new(&project.name),
                     Cell::new(project.pid.to_string()),
                     Cell::new(format_uptime(project.uptime_secs)),
+                    Cell::new(routes),
                 ]);
             }
             println!("{table}");

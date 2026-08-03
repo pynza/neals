@@ -1,4 +1,5 @@
-use neals_common::ProjectRuntime;
+use crate::caddy::CaddyManager;
+use neals_common::{ProjectRuntime, RouteDecl};
 use std::collections::HashMap;
 use std::time::Instant;
 use tokio::process::Child;
@@ -9,11 +10,22 @@ pub struct RunningProject {
     pub child: Child,
     pub pid: u32,
     pub started_at: Instant,
+    pub routes: Vec<RouteDecl>,
+    pub project_path: std::path::PathBuf,
 }
 
-#[derive(Default)]
 pub struct AppState {
     pub projects: HashMap<String, RunningProject>,
+    pub caddy: CaddyManager,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            projects: HashMap::new(),
+            caddy: CaddyManager::disabled(),
+        }
+    }
 }
 
 impl AppState {
@@ -24,6 +36,11 @@ impl AppState {
                 name: p.name.clone(),
                 pid: p.pid,
                 uptime_secs: p.started_at.elapsed().as_secs(),
+                routes: p
+                    .routes
+                    .iter()
+                    .map(|r| r.public_host(&p.name))
+                    .collect(),
             })
             .collect()
     }
@@ -32,11 +49,23 @@ impl AppState {
         self.projects.contains_key(name)
     }
 
+    pub fn route_snapshot(&self) -> Vec<(String, Vec<RouteDecl>)> {
+        self.projects
+            .values()
+            .map(|p| (p.name.clone(), p.routes.clone()))
+            .collect()
+    }
+
     pub async fn stop(&mut self, name: &str) -> Result<(), String> {
         let Some(mut running) = self.projects.remove(name) else {
             return Err(format!("project `{name}` is not running"));
         };
         stop_process_group(running.pid, &mut running.child).await;
+        let _ = crate::caddy::cleanup_neals_dir(&running.project_path);
+        let snapshot = self.route_snapshot();
+        if let Err(err) = self.caddy.apply_routes(&snapshot).await {
+            return Err(err.to_string());
+        }
         Ok(())
     }
 
@@ -45,6 +74,7 @@ impl AppState {
         for name in names {
             let _ = self.stop(&name).await;
         }
+        self.caddy.shutdown().await;
     }
 }
 

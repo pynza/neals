@@ -5,7 +5,10 @@ pub mod registry;
 pub mod xdg;
 
 pub use client::call_daemon;
-pub use devenv::{parse_neals_name, resolve_project_name, ProjectName};
+pub use devenv::{
+    parse_neals_name, parse_neals_routes, read_neals_routes, resolve_project_name, ProjectName,
+    RouteDecl,
+};
 pub use ipc::{
     decode_request, decode_response, encode_request, encode_response, ProjectRuntime, Request,
     Response,

@@ -19,7 +19,7 @@ pub fn run_doctor() -> Result<ExitCode> {
         check_nealsd(),
         check_on_path("nix", &["--version"], true),
         check_devenv(),
-        check_on_path("caddy", &["version"], false),
+        check_on_path("caddy", &["version"], true),
         check_dir_writable("config", config_dir()?),
         check_dir_writable("state", state_dir()?),
         check_dir_writable("runtime", runtime_dir()?),

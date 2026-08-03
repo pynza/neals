@@ -16,13 +16,16 @@ pub fn ensure_daemon() -> Result<()> {
         return Ok(());
     }
     start_nealsd()?;
-    for _ in 0..10 {
-        thread::sleep(Duration::from_millis(50));
+    // nealsd may wait up to ~5s for caddy admin before accepting ping
+    for _ in 0..40 {
+        thread::sleep(Duration::from_millis(250));
         if ping_ok() {
             return Ok(());
         }
     }
-    bail!("failed to start nealsd (is the `nealsd` binary available?)");
+    bail!(
+        "failed to start nealsd (check ~/.local/state/neals/nealsd.log and caddy.log)"
+    );
 }
 
 fn ping_ok() -> bool {

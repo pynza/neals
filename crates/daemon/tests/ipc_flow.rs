@@ -45,9 +45,18 @@ impl TestEnv {
         std::env::set_var("XDG_STATE_HOME", &state);
         std::env::set_var("XDG_RUNTIME_DIR", &runtime);
         std::env::set_var("NEALS_UP_CMD", "sleep 3600");
+        std::env::set_var("NEALS_CADDY_CMD", "-");
 
         let project_dir = root.join("demo-project");
         fs::create_dir_all(&project_dir).unwrap();
+        fs::write(
+            project_dir.join("devenv.nix"),
+            r#"{
+              neals.name = "demo";
+              neals.route.backend = "backend.sock";
+            }"#,
+        )
+        .unwrap();
         let mut registry = Registry::default();
         registry
             .add(Project {
@@ -99,9 +108,20 @@ async fn ping_up_status_down() {
             assert_eq!(projects.len(), 1);
             assert_eq!(projects[0].name, "demo");
             assert!(projects[0].pid > 0);
+            assert_eq!(
+                projects[0].routes,
+                vec!["backend.demo.localhost".to_string()]
+            );
         }
         other => panic!("expected Status, got {other:?}"),
     }
+
+    let link = _env
+        .root
+        .join("demo-project")
+        .join(".neals")
+        .join("backend.sock");
+    assert!(link.symlink_metadata().is_ok(), "expected .neals symlink");
 
     let log = std::env::var("XDG_STATE_HOME").unwrap();
     let log_path = PathBuf::from(log).join("neals").join("demo.log");

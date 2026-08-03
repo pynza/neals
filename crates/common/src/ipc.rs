@@ -22,6 +22,8 @@ pub struct ProjectRuntime {
     pub name: String,
     pub pid: u32,
     pub uptime_secs: u64,
+    #[serde(default)]
+    pub routes: Vec<String>,
 }
 
 fn encode_line<T: Serialize>(value: &T) -> Result<String> {
@@ -104,6 +106,7 @@ mod tests {
                     name: "demo".into(),
                     pid: 42,
                     uptime_secs: 120,
+                    routes: vec!["backend.demo.localhost".into()],
                 }],
             },
         ];
