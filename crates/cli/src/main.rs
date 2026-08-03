@@ -1,4 +1,5 @@
 mod daemon_client;
+mod doctor;
 mod logs;
 
 use anyhow::{bail, Context, Result};
@@ -59,7 +60,12 @@ enum Commands {
     Logs {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
+        /// Follow the log output (like `tail -f`)
+        #[arg(short = 'f', long = "follow")]
+        follow: bool,
     },
+    /// Check that required tools and directories are available
+    Doctor,
     /// Open an interactive devenv shell for a registered project
     Bash {
         /// Project name as shown by `neals list`
@@ -144,10 +150,11 @@ fn run() -> Result<ExitCode> {
             cmd_status()?;
             Ok(ExitCode::SUCCESS)
         }
-        Commands::Logs { project } => {
-            print_project_logs(&project)?;
+        Commands::Logs { project, follow } => {
+            print_project_logs(&project, follow)?;
             Ok(ExitCode::SUCCESS)
         }
+        Commands::Doctor => doctor::run_doctor(),
         Commands::Bash { project } => cmd_bash(&project),
         Commands::Exec { project, command } => cmd_exec(&project, &command),
         Commands::Completions { shell } => {

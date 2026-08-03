@@ -57,7 +57,7 @@ fn start_nealsd() -> Result<()> {
     Ok(())
 }
 
-fn find_nealsd() -> PathBuf {
+pub(crate) fn find_nealsd() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         let sibling = exe.with_file_name("nealsd");
         if sibling.is_file() {

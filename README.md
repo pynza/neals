@@ -16,7 +16,9 @@ Project name: set `neals.name = "my-app";` in `devenv.nix` (folder name is fallb
 cargo run -p neals -- register
 cargo run -p neals -- up my-app
 cargo run -p neals -- status
-cargo run -p neals -- logs my-app    # last 100 lines
+cargo run -p neals -- logs my-app       # last 100 lines
+cargo run -p neals -- logs my-app -f    # last 100 lines, then follow
+cargo run -p neals -- doctor
 cargo run -p neals -- down my-app
 ```
 

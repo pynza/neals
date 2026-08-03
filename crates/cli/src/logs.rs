@@ -1,11 +1,14 @@
 use anyhow::{bail, Context, Result};
 use neals_common::{ensure_dir, state_dir};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 pub const LOG_TAIL_LINES: usize = 100;
 const TAIL_BLOCK: u64 = 8 * 1024;
+const FOLLOW_POLL: Duration = Duration::from_millis(200);
 
 pub fn project_log_path(project: &str) -> Result<PathBuf> {
     let dir = state_dir()?;
@@ -77,7 +80,7 @@ pub fn tail_lines(path: &Path, n: usize) -> Result<Vec<String>> {
     Ok(text.lines().map(str::to_string).collect())
 }
 
-pub fn print_project_logs(project: &str) -> Result<()> {
+pub fn print_project_logs(project: &str, follow: bool) -> Result<()> {
     let path = project_log_path(project)?;
     if !path.is_file() {
         bail!(
@@ -88,7 +91,50 @@ pub fn print_project_logs(project: &str) -> Result<()> {
     for line in tail_lines(&path, LOG_TAIL_LINES)? {
         println!("{line}");
     }
+    io::stdout().flush().ok();
+    if follow {
+        follow_log(&path)?;
+    }
     Ok(())
+}
+
+fn follow_log(path: &Path) -> Result<()> {
+    let mut file = File::open(path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    let mut offset = file
+        .seek(SeekFrom::End(0))
+        .with_context(|| format!("failed to seek {}", path.display()))?;
+    let mut pending = String::new();
+
+    loop {
+        let len = std::fs::metadata(path)
+            .with_context(|| format!("failed to stat {}", path.display()))?
+            .len();
+        if len < offset {
+            offset = 0;
+            pending.clear();
+            file = File::open(path)
+                .with_context(|| format!("failed to reopen {}", path.display()))?;
+        }
+
+        if len > offset {
+            file.seek(SeekFrom::Start(offset))
+                .with_context(|| format!("failed to seek {}", path.display()))?;
+            let mut chunk = vec![0u8; (len - offset) as usize];
+            file.read_exact(&mut chunk)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            offset = len;
+            pending.push_str(&String::from_utf8_lossy(&chunk));
+            while let Some(idx) = pending.find('\n') {
+                let line = pending[..idx].trim_end_matches('\r');
+                println!("{line}");
+                pending.drain(..=idx);
+            }
+            io::stdout().flush().ok();
+        }
+
+        thread::sleep(FOLLOW_POLL);
+    }
 }
 
 #[cfg(test)]
