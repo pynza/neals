@@ -16,6 +16,24 @@ pub fn project_log_path(project: &str) -> Result<PathBuf> {
     Ok(dir.join(format!("{project}.log")))
 }
 
+pub fn wait_for_log_file(project: &str) -> Result<PathBuf> {
+    let path = project_log_path(project)?;
+    for _ in 0..20 {
+        if path.is_file() {
+            return Ok(path);
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    if path.is_file() {
+        Ok(path)
+    } else {
+        bail!(
+            "no log file for project `{project}` at {} yet",
+            path.display()
+        )
+    }
+}
+
 pub fn tail_lines(path: &Path, n: usize) -> Result<Vec<String>> {
     if n == 0 {
         return Ok(Vec::new());
@@ -80,6 +98,67 @@ pub fn tail_lines(path: &Path, n: usize) -> Result<Vec<String>> {
     Ok(text.lines().map(str::to_string).collect())
 }
 
+/// Incremental log reader for live views / plain follow.
+pub struct LogFollower {
+    path: PathBuf,
+    file: File,
+    offset: u64,
+    pending: String,
+}
+
+impl LogFollower {
+    pub fn open_at_end(path: &Path) -> Result<Self> {
+        let mut file = File::open(path)
+            .with_context(|| format!("failed to open {}", path.display()))?;
+        let offset = file
+            .seek(SeekFrom::End(0))
+            .with_context(|| format!("failed to seek {}", path.display()))?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            file,
+            offset,
+            pending: String::new(),
+        })
+    }
+
+    pub fn open_with_tail(path: &Path, n: usize) -> Result<(Self, Vec<String>)> {
+        let lines = tail_lines(path, n)?;
+        let follower = Self::open_at_end(path)?;
+        Ok((follower, lines))
+    }
+
+    pub fn poll_lines(&mut self) -> Result<Vec<String>> {
+        let len = std::fs::metadata(&self.path)
+            .with_context(|| format!("failed to stat {}", self.path.display()))?
+            .len();
+        if len < self.offset {
+            self.offset = 0;
+            self.pending.clear();
+            self.file = File::open(&self.path)
+                .with_context(|| format!("failed to reopen {}", self.path.display()))?;
+        }
+
+        let mut out = Vec::new();
+        if len > self.offset {
+            self.file
+                .seek(SeekFrom::Start(self.offset))
+                .with_context(|| format!("failed to seek {}", self.path.display()))?;
+            let mut chunk = vec![0u8; (len - self.offset) as usize];
+            self.file
+                .read_exact(&mut chunk)
+                .with_context(|| format!("failed to read {}", self.path.display()))?;
+            self.offset = len;
+            self.pending.push_str(&String::from_utf8_lossy(&chunk));
+            while let Some(idx) = self.pending.find('\n') {
+                let line = self.pending[..idx].trim_end_matches('\r').to_string();
+                out.push(line);
+                self.pending.drain(..=idx);
+            }
+        }
+        Ok(out)
+    }
+}
+
 pub fn print_project_logs(project: &str, follow: bool) -> Result<()> {
     let path = project_log_path(project)?;
     if !path.is_file() {
@@ -93,65 +172,26 @@ pub fn print_project_logs(project: &str, follow: bool) -> Result<()> {
     }
     io::stdout().flush().ok();
     if follow {
-        follow_log(&path)?;
+        let mut follower = LogFollower::open_at_end(&path)?;
+        loop {
+            for line in follower.poll_lines()? {
+                println!("{line}");
+            }
+            io::stdout().flush().ok();
+            thread::sleep(FOLLOW_POLL);
+        }
     }
     Ok(())
 }
 
-/// Follow a project log from the current end (no historical tail). Used after `neals up`.
 pub fn follow_project_logs(project: &str) -> Result<()> {
-    let path = project_log_path(project)?;
-    // File is created on Up; wait briefly if spawn is racing the open.
-    for _ in 0..20 {
-        if path.is_file() {
-            break;
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-    if !path.is_file() {
-        bail!(
-            "no log file for project `{project}` at {} yet",
-            path.display()
-        );
-    }
-    follow_log(&path)
-}
-
-fn follow_log(path: &Path) -> Result<()> {
-    let mut file = File::open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    let mut offset = file
-        .seek(SeekFrom::End(0))
-        .with_context(|| format!("failed to seek {}", path.display()))?;
-    let mut pending = String::new();
-
+    let path = wait_for_log_file(project)?;
+    let mut follower = LogFollower::open_at_end(&path)?;
     loop {
-        let len = std::fs::metadata(path)
-            .with_context(|| format!("failed to stat {}", path.display()))?
-            .len();
-        if len < offset {
-            offset = 0;
-            pending.clear();
-            file = File::open(path)
-                .with_context(|| format!("failed to reopen {}", path.display()))?;
+        for line in follower.poll_lines()? {
+            println!("{line}");
         }
-
-        if len > offset {
-            file.seek(SeekFrom::Start(offset))
-                .with_context(|| format!("failed to seek {}", path.display()))?;
-            let mut chunk = vec![0u8; (len - offset) as usize];
-            file.read_exact(&mut chunk)
-                .with_context(|| format!("failed to read {}", path.display()))?;
-            offset = len;
-            pending.push_str(&String::from_utf8_lossy(&chunk));
-            while let Some(idx) = pending.find('\n') {
-                let line = pending[..idx].trim_end_matches('\r');
-                println!("{line}");
-                pending.drain(..=idx);
-            }
-            io::stdout().flush().ok();
-        }
-
+        io::stdout().flush().ok();
         thread::sleep(FOLLOW_POLL);
     }
 }
@@ -214,6 +254,19 @@ mod tests {
             got,
             vec!["line-49997", "line-49998", "line-49999"]
         );
+        let _ = fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn follower_polls_new_lines() {
+        let tmp = temp_path("follow");
+        fs::write(&tmp, "a\n").unwrap();
+        let mut f = LogFollower::open_at_end(&tmp).unwrap();
+        assert!(f.poll_lines().unwrap().is_empty());
+        let mut file = fs::OpenOptions::new().append(true).open(&tmp).unwrap();
+        writeln!(file, "b").unwrap();
+        drop(file);
+        assert_eq!(f.poll_lines().unwrap(), vec!["b"]);
         let _ = fs::remove_file(&tmp);
     }
 }

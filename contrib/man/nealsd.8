@@ -1,0 +1,88 @@
+.TH NEALSD 8 "August 2026" "neals" "System Administration"
+.SH NAME
+nealsd \- Neals local platform daemon
+.SH SYNOPSIS
+.B nealsd
+.SH DESCRIPTION
+.B nealsd
+is the background daemon for
+.BR neals (1).
+It accepts JSON-line requests over a UNIX socket, runs
+.B devenv up
+/
+.B down
+for registered projects, leases loopback TCP ports for
+.B neals.route.*=tcp
+services, manages
+.B .neals
+symlinks for UNIX routes, and runs a dedicated Caddy instance that reverse-proxies
+.BI {service}.{project}.localhost
+to those backends.
+.PP
+Prefer starting it via systemd:
+.B nealsd@\fIUSER\fR.service
+(see
+.IR contrib/systemd/ ).
+The CLI also auto-starts an ad-hoc
+.B nealsd
+when no system socket is present.
+.SH SOCKETS
+.TP
+.I /run/neals/nealsd.sock
+System unit (RuntimeDirectory=neals, XDG_RUNTIME_DIR=/run).
+.TP
+.I $XDG_RUNTIME_DIR/neals/nealsd.sock
+Ad-hoc / development.
+.PP
+Override with
+.BR NEALS_SOCKET .
+.SH HTTP
+.TP
+System mode (\fBNEALS_MODE=system\fR)
+Listen
+.B 127.0.0.1:80
+(unit grants
+.BR CAP_NET_BIND_SERVICE ).
+.TP
+Ad-hoc
+Listen
+.B 127.0.0.1:2015
+unless
+.B NEALS_CADDY_HTTP_ADDR
+is set.
+.PP
+Caddy config and logs live under the state directory
+(typically
+.IR ~/.local/state/neals/ ).
+.SH ENVIRONMENT
+.TP
+.B NEALS_MODE
+.B system
+selects privileged HTTP defaults.
+.TP
+.B NEALS_CADDY_HTTP_ADDR
+Caddy listen address.
+.TP
+.B NEALS_CADDY_CMD
+Override Caddy binary/args, or
+.B \-
+to disable Caddy (tests).
+.SH FILES
+.TP
+.I ~/.config/neals/projects.json
+Registry read by the daemon on up/down.
+.TP
+.I ~/.local/state/neals/caddy.json
+Generated Caddy config.
+.TP
+.I ~/.local/state/neals/*.log
+Per-project and daemon logs.
+.TP
+.I /etc/systemd/system/nealsd@.service
+Systemd template unit.
+.SH SEE ALSO
+.BR neals (1),
+.BR systemctl (1),
+.BR caddy (1)
+.SH AUTHORS
+Neals contributors.

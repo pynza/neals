@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install neals + nealsd and enable the system daemon for one user.
+# Install neals + nealsd, man pages, docs, and enable the system daemon for one user.
 # Requires: root, systemd, caddy on PATH for that user, built release binaries.
 set -euo pipefail
 
@@ -8,6 +8,8 @@ PREFIX="${PREFIX:-/usr/local}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 UNIT_SRC="$ROOT/contrib/systemd/nealsd@.service"
 DOC_SRC="$ROOT/contrib/systemd/README.md"
+MAN1_SRC="$ROOT/contrib/man/neals.1"
+MAN8_SRC="$ROOT/contrib/man/nealsd.8"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "run as root: sudo $0 [username]" >&2
@@ -35,6 +37,8 @@ done
 
 install -Dm644 "$UNIT_SRC" /etc/systemd/system/nealsd@.service
 install -Dm644 "$DOC_SRC" "$PREFIX/share/doc/neals/systemd.md"
+install -Dm644 "$MAN1_SRC" "$PREFIX/share/man/man1/neals.1"
+install -Dm644 "$MAN8_SRC" "$PREFIX/share/man/man8/nealsd.8"
 
 # Point ExecStart at PREFIX if not /usr/local
 if [[ "$PREFIX" != "/usr/local" ]]; then
@@ -54,12 +58,21 @@ EOF
 fi
 
 systemctl daemon-reload
+# Refresh man DB when available (ignore failures on minimal systems).
+if command -v mandb >/dev/null 2>&1; then
+  mandb -q "$PREFIX/share/man" 2>/dev/null || true
+fi
+
 systemctl enable --now "nealsd@${USER_NAME}.service"
 
 echo
 echo "nealsd@${USER_NAME} enabled."
 echo "  socket: /run/neals/nealsd.sock"
 echo "  HTTP:   http://{service}.{project}.localhost/  (port 80)"
+echo "  man:    man neals    man nealsd"
 echo
 echo "Try:  sudo -u $USER_NAME $PREFIX/bin/neals doctor"
 echo "      sudo -u $USER_NAME $PREFIX/bin/neals status"
+echo
+echo "Uninstall: sudo $ROOT/contrib/systemd/uninstall.sh $USER_NAME"
+echo "           sudo $ROOT/contrib/systemd/uninstall.sh --purge $USER_NAME"

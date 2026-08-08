@@ -1,26 +1,64 @@
 mod daemon_client;
 mod doctor;
+mod live;
 mod logs;
+mod repl;
+mod shell;
+mod style;
 
 use anyhow::{bail, Context, Result};
-use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{builder::styling, ColorChoice, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{
     engine::{ArgValueCompleter, CompletionCandidate},
     CompleteEnv,
 };
-use comfy_table::{Cell, Table};
+use comfy_table::Cell;
 use daemon_client::with_daemon;
-use logs::{follow_project_logs, print_project_logs};
+use live::run_live_view;
 use neals_common::{
     resolve_project_name, Project, ProjectName, Registry, Request, Response,
 };
 use std::env;
 use std::io::{self, IsTerminal, Write};
-use std::path::Path;
-use std::process::{Command, ExitCode, ExitStatus, Stdio};
+use std::process::ExitCode;
+
+const LONG_ABOUT: &str = "\
+Neals orchestrates local devenv projects: registry, lifecycle (up/down),
+HTTP routes via a dedicated Caddy, and branded project shells.
+
+Typical flow:
+  neals register
+  neals up my-app          # live view: routes + logs
+  # browser → http://api.my-app.localhost/  (system daemon)
+  #        or http://api.my-app.localhost:2015/  (ad-hoc)
+
+Install the system daemon for portless URLs (CAP_NET_BIND_SERVICE on :80):
+  see contrib/systemd/README.md
+";
+
+const AFTER_HELP: &str = "\
+Directories:
+  ~/.config/neals/projects.json     project registry
+  ~/.local/state/neals/             logs, caddy.json, shell rc snippets
+  $XDG_RUNTIME_DIR/neals/           ad-hoc IPC + sockets
+  /run/neals/nealsd.sock            system daemon socket (if installed)
+  <project>/.neals/                 convenience symlinks to UNIX sockets
+
+Keys in the live view (neals up / logs -f):
+  Ctrl+C / q    detach (project keeps running)
+  Ctrl+X        stop the project
+";
 
 #[derive(Parser)]
-#[command(name = "neals", about = "Local platform orchestrator for devenv projects")]
+#[command(
+    name = "neals",
+    version,
+    about = "Local platform orchestrator for devenv projects",
+    long_about = LONG_ABOUT,
+    after_help = AFTER_HELP,
+    color = ColorChoice::Auto,
+    styles = clap_styles()
+)]
 struct Cli {
     /// Skip confirmation prompts
     #[arg(short = 'y', long = "yes", global = true)]
@@ -30,60 +68,94 @@ struct Cli {
     command: Commands,
 }
 
+fn clap_styles() -> styling::Styles {
+    styling::Styles::styled()
+        .header(styling::AnsiColor::Cyan.on_default().bold())
+        .usage(styling::AnsiColor::Cyan.on_default().bold())
+        .literal(styling::AnsiColor::Magenta.on_default().bold())
+        .placeholder(styling::AnsiColor::BrightBlue.on_default())
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Register the current directory in the global project registry
+    #[command(long_about = "\
+Reads `neals.name` from devenv.nix (folder name as fallback) and adds the
+project to ~/.config/neals/projects.json.")]
     Register,
+
     /// List registered projects
     List,
+
     /// Remove a project from the registry
     Unregister {
         /// Project name as shown by `neals list`
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
     },
+
     /// Remove registry entries whose paths no longer exist
     Prune,
-    /// Start a project via nealsd (`devenv up`), then follow its logs
+
+    /// Start a project (`devenv up`) and open the live log view
+    #[command(long_about = "\
+Starts the project under nealsd, prints HTTP routes, then opens a live view
+with sticky route URLs and scrolling logs.\n\n\
+Ctrl+C / q detach (keeps running). Ctrl+X stops the project.\n\
+Use -d/--detach to skip the live view.")]
     Up {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
-        /// Do not follow logs after start
+        /// Start without opening the live view
         #[arg(short = 'd', long = "detach")]
         detach: bool,
     },
-    /// Stop a project via nealsd
+
+    /// Stop a running project
     Down {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
     },
+
     /// Show projects currently running under nealsd
     Status,
-    /// Print the last lines of a project's daemon log
+
+    /// Show a project's daemon log
+    #[command(long_about = "\
+Prints the last 100 log lines. With -f/--follow, opens the same live view
+as `neals up` (routes header + scrolling logs).")]
     Logs {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
-        /// Follow the log output (like `tail -f`)
+        /// Open the live view and follow new lines
         #[arg(short = 'f', long = "follow")]
         follow: bool,
     },
+
     /// Check that required tools and directories are available
     Doctor,
-    /// Open an interactive devenv shell for a registered project
+
+    /// Open an interactive shell in the project's devenv
+    #[command(name = "bash", long_about = "\
+Enters a quiet `devenv shell` using $SHELL. bash/zsh get a short prompt
+`neals:<project>`; use `neals status` for routes.")]
     Bash {
-        /// Project name as shown by `neals list`
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
     },
-    /// Run a command inside a registered project's devenv shell
+
+    /// Run a command inside a project's devenv shell
     Exec {
-        /// Project name as shown by `neals list`
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
         /// Command and args after `--`, e.g. `neals exec app -- npm test`
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<String>,
     },
+
+    /// Interactive command loop (list, up, logs, …)
+    Repl,
+
     /// Print shell completion setup for bash, zsh, fish, elvish, or powershell
     Completions {
         shell: CompletionShell,
@@ -116,7 +188,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("error: {err:#}");
+            style::print_err(&format!("{err:#}"));
             ExitCode::FAILURE
         }
     }
@@ -154,12 +226,23 @@ fn run() -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Commands::Logs { project, follow } => {
-            print_project_logs(&project, follow)?;
+            if follow {
+                let _ = run_live_view(&project, false)?;
+            } else {
+                logs::print_project_logs(&project, false)?;
+            }
             Ok(ExitCode::SUCCESS)
         }
         Commands::Doctor => doctor::run_doctor(),
-        Commands::Bash { project } => cmd_bash(&project),
-        Commands::Exec { project, command } => cmd_exec(&project, &command),
+        Commands::Bash { project } => {
+            let path = project_path(&project)?;
+            shell::enter_project_shell(&project, &path)
+        }
+        Commands::Exec { project, command } => {
+            let path = project_path(&project)?;
+            shell::run_project_exec(&project, &path, &command)
+        }
+        Commands::Repl => repl::run_repl(cli.yes),
         Commands::Completions { shell } => {
             cmd_completions(shell)?;
             Ok(ExitCode::SUCCESS)
@@ -194,8 +277,12 @@ fn cmd_register(yes: bool) -> Result<()> {
     let name = match &resolved {
         ProjectName::FromDevenv(name) => name.clone(),
         ProjectName::Fallback(name) => {
-            eprintln!("warning: no `neals.name` in devenv.nix; falling back to folder name `{name}`");
-            eprintln!("         services will be reachable at <service>.{name}.localhost");
+            style::print_warn(&format!(
+                "no `neals.name` in devenv.nix; falling back to folder name `{name}`"
+            ));
+            style::eprint_dim(&format!(
+                "services will be reachable at <service>.{name}.localhost"
+            ));
             if !confirm("Register using this folder name?", yes)? {
                 bail!("registration cancelled");
             }
@@ -206,14 +293,14 @@ fn cmd_register(yes: bool) -> Result<()> {
     let mut registry = Registry::load()?;
     if let Some(existing) = registry.get(&name) {
         if existing.path == path {
-            println!("already registered `{name}` -> {}", path.display());
+            style::print_ok(&format!("already registered `{name}` → {}", path.display()));
             return Ok(());
         }
-        eprintln!(
-            "warning: project `{name}` is already registered at {}",
+        style::print_warn(&format!(
+            "project `{name}` is already registered at {}",
             existing.path.display()
-        );
-        eprintln!("         override with {}?", path.display());
+        ));
+        style::eprint_dim(&format!("override with {}?", path.display()));
         if !confirm("Override existing registration?", yes)? {
             bail!("registration cancelled");
         }
@@ -222,7 +309,7 @@ fn cmd_register(yes: bool) -> Result<()> {
             path: path.clone(),
         });
         registry.save()?;
-        println!("overrode `{name}` -> {}", path.display());
+        style::print_ok(&format!("overrode `{name}` → {}", path.display()));
         return Ok(());
     }
 
@@ -231,29 +318,33 @@ fn cmd_register(yes: bool) -> Result<()> {
         path: path.clone(),
     })?;
     registry.save()?;
-    println!("registered `{name}` -> {}", path.display());
+    style::print_ok(&format!("registered `{name}` → {}", path.display()));
     Ok(())
 }
 
-fn cmd_list() -> Result<()> {
+pub(crate) fn cmd_list() -> Result<()> {
     let registry = Registry::load()?;
     if registry.projects.is_empty() {
-        println!("no projects registered");
+        style::print_dim("no projects registered");
         return Ok(());
     }
 
-    let mut table = Table::new();
-    table.set_header(vec!["Name", "Path", "Status"]);
+    let mut table = style::new_table();
+    table.set_header(vec![
+        style::header_cell("Name"),
+        style::header_cell("Path"),
+        style::header_cell("Status"),
+    ]);
     for project in &registry.projects {
         let status = if project.is_ghost() {
-            "ghost"
+            style::status_warn("ghost")
         } else {
-            "ok"
+            style::status_ok("ok")
         };
         table.add_row(vec![
             Cell::new(&project.name),
             Cell::new(project.path.display().to_string()),
-            Cell::new(status),
+            status,
         ]);
     }
     println!("{table}");
@@ -264,11 +355,11 @@ fn cmd_unregister(name: &str) -> Result<()> {
     let mut registry = Registry::load()?;
     let removed = registry.remove(name)?;
     registry.save()?;
-    println!(
+    style::print_ok(&format!(
         "unregistered `{}` (was {})",
         removed.name,
         removed.path.display()
-    );
+    ));
     Ok(())
 }
 
@@ -281,13 +372,13 @@ fn cmd_prune(yes: bool) -> Result<()> {
         .cloned()
         .collect();
     if ghosts.is_empty() {
-        println!("nothing to prune");
+        style::print_dim("nothing to prune");
         return Ok(());
     }
 
-    eprintln!("ghost projects:");
+    style::print_warn("ghost projects:");
     for project in &ghosts {
-        eprintln!("  {} -> {}", project.name, project.path.display());
+        style::eprint_dim(&format!("  {} → {}", project.name, project.path.display()));
     }
     if !confirm(&format!("Remove {} ghost project(s)?", ghosts.len()), yes)? {
         bail!("prune cancelled");
@@ -295,42 +386,30 @@ fn cmd_prune(yes: bool) -> Result<()> {
 
     let removed = registry.take_ghosts();
     registry.save()?;
-    println!("pruned {} project(s)", removed.len());
+    style::print_ok(&format!("pruned {} project(s)", removed.len()));
     Ok(())
 }
 
-fn cmd_up(project: &str, detach: bool) -> Result<()> {
+pub(crate) fn cmd_up(project: &str, detach: bool) -> Result<()> {
     match with_daemon(Request::Up {
         project: project.to_string(),
     })? {
         Response::Ok => {
-            println!("started `{project}`");
+            style::print_ok(&format!("started `{project}`"));
             if let Ok(Response::Status { projects }) = with_daemon(Request::Status) {
                 if let Some(p) = projects.iter().find(|p| p.name == project) {
                     for route in &p.routes {
-                        println!("  → {route}");
+                        println!("  → {}", style::accent(route));
                     }
                 }
             }
             if detach {
-                println!("detached; use `neals logs {project} -f` to follow");
+                style::print_dim(&format!(
+                    "detached; use `neals logs {project} -f` or `neals repl` to follow"
+                ));
                 return Ok(());
             }
-            println!("--- logs (Ctrl+C stops following; project keeps running) ---");
-            // Ctrl+C ends the CLI process; project stays up under nealsd.
-            follow_project_logs(project)
-        }
-        Response::Error { message } => bail!("{message}"),
-        other => bail!("unexpected response from nealsd: {other:?}"),
-    }
-}
-
-fn cmd_down(project: &str) -> Result<()> {
-    match with_daemon(Request::Down {
-        project: project.to_string(),
-    })? {
-        Response::Ok => {
-            println!("stopped `{project}`");
+            let _ = run_live_view(project, true)?;
             Ok(())
         }
         Response::Error { message } => bail!("{message}"),
@@ -338,20 +417,38 @@ fn cmd_down(project: &str) -> Result<()> {
     }
 }
 
-fn cmd_status() -> Result<()> {
+pub(crate) fn cmd_down(project: &str) -> Result<()> {
+    match with_daemon(Request::Down {
+        project: project.to_string(),
+    })? {
+        Response::Ok => {
+            style::print_ok(&format!("stopped `{project}`"));
+            Ok(())
+        }
+        Response::Error { message } => bail!("{message}"),
+        other => bail!("unexpected response from nealsd: {other:?}"),
+    }
+}
+
+pub(crate) fn cmd_status() -> Result<()> {
     match with_daemon(Request::Status)? {
         Response::Status { projects } => {
             if projects.is_empty() {
-                println!("no projects running");
+                style::print_dim("no projects running");
                 return Ok(());
             }
-            let mut table = Table::new();
-            table.set_header(vec!["Name", "PID", "Uptime", "Routes"]);
+            let mut table = style::new_table();
+            table.set_header(vec![
+                style::header_cell("Name"),
+                style::header_cell("PID"),
+                style::header_cell("Uptime"),
+                style::header_cell("Routes"),
+            ]);
             for project in projects {
                 let routes = if project.routes.is_empty() {
                     "-".into()
                 } else {
-                    project.routes.join(", ")
+                    project.routes.join("\n")
                 };
                 table.add_row(vec![
                     Cell::new(&project.name),
@@ -398,41 +495,6 @@ fn project_path(name: &str) -> Result<std::path::PathBuf> {
         Some(project) => Ok(project.path.clone()),
         None => bail!("project `{name}` is not registered"),
     }
-}
-
-fn exit_code_from_status(status: ExitStatus) -> ExitCode {
-    match status.code() {
-        Some(0) => ExitCode::SUCCESS,
-        Some(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
-        None => ExitCode::FAILURE,
-    }
-}
-
-fn run_devenv(dir: &Path, args: &[&str]) -> Result<ExitCode> {
-    let status = Command::new("devenv")
-        .args(args)
-        .current_dir(dir)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .context("failed to run `devenv` (is it installed and on PATH?)")?;
-    Ok(exit_code_from_status(status))
-}
-
-fn cmd_bash(project: &str) -> Result<ExitCode> {
-    let path = project_path(project)?;
-    run_devenv(&path, &["shell"])
-}
-
-fn cmd_exec(project: &str, command: &[String]) -> Result<ExitCode> {
-    if command.is_empty() {
-        bail!("no command provided");
-    }
-    let path = project_path(project)?;
-    let mut args: Vec<&str> = vec!["shell", "--"];
-    args.extend(command.iter().map(String::as_str));
-    run_devenv(&path, &args)
 }
 
 #[cfg(test)]

@@ -27,11 +27,17 @@ pub async fn run() -> Result<()> {
 
     let listener = UnixListener::bind(&sock)
         .with_context(|| format!("failed to bind {}", sock.display()))?;
-    eprintln!("nealsd listening on {}", sock.display());
+    eprintln!("nealsd: ipc {}", sock.display());
 
     let caddy = CaddyManager::start()
         .await
         .context("failed to start caddy")?;
+    let http = caddy.http_addr();
+    if http.is_empty() {
+        eprintln!("nealsd: caddy disabled");
+    } else {
+        eprintln!("nealsd: http  http://{http}/  (Host: {{service}}.{{project}}.localhost)");
+    }
     let state = Arc::new(Mutex::new(AppState {
         projects: Default::default(),
         caddy,

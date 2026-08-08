@@ -34,14 +34,28 @@ neals up my-app -d
 `install.sh`:
 
 1. Copies `neals` / `nealsd` to `/usr/local/bin` (override with `PREFIX=…`)
-2. Installs `nealsd@.service` under `/etc/systemd/system/`
-3. `systemctl enable --now nealsd@$USER`
+2. Installs man pages (`man neals`, `man nealsd`) and this doc under `share/doc/neals/`
+3. Installs `nealsd@.service` under `/etc/systemd/system/`
+4. `systemctl enable --now nealsd@$USER`
+
+## Uninstall
+
+```bash
+sudo ./contrib/systemd/uninstall.sh "$USER"
+# also delete ~/.config/neals and ~/.local/state/neals:
+sudo ./contrib/systemd/uninstall.sh --purge "$USER"
+```
+
+Stops/disables the unit, removes binaries, man pages, unit/drop-in, and docs.
+Without `--purge`, user registry and logs are kept.
 
 ## Manual install
 
 ```bash
 sudo install -Dm755 target/release/nealsd /usr/local/bin/nealsd
 sudo install -Dm755 target/release/neals /usr/local/bin/neals
+sudo install -Dm644 contrib/man/neals.1 /usr/local/share/man/man1/neals.1
+sudo install -Dm644 contrib/man/nealsd.8 /usr/local/share/man/man8/nealsd.8
 sudo cp contrib/systemd/nealsd@.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now "nealsd@$USER"
@@ -95,18 +109,12 @@ Override anytime: `NEALS_CADDY_HTTP_ADDR=127.0.0.1:8080`.
 - `CapabilityBoundingSet` prevents the daemon from gaining other caps.
 - `NoNewPrivileges=true` blocks setuid elevation from the service tree.
 - Caddy listens on **loopback only** (`127.0.0.1:80`), not on the LAN.
-- Stop / remove:
-
-  ```bash
-  sudo systemctl disable --now "nealsd@$USER"
-  sudo rm /etc/systemd/system/nealsd@.service
-  sudo systemctl daemon-reload
-  ```
+- Remove with `contrib/systemd/uninstall.sh` (see above).
 
 ## Requirements
 
 - Linux + systemd  
-- `caddy` on the service user’s PATH (login shell PATH may differ from systemd;
+- `caddy` on the service user’s PATH (login shell PATH may differ from systemd);
   if Caddy is missing, put a drop-in:
 
   ```bash

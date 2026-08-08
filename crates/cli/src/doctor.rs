@@ -1,4 +1,5 @@
 use crate::daemon_client::find_nealsd;
+use crate::style;
 use anyhow::Result;
 use neals_common::{
     call_daemon, config_dir, ensure_dir, runtime_dir, state_dir, Request, Response,
@@ -33,22 +34,18 @@ pub fn run_doctor() -> Result<ExitCode> {
 
     let mut failed = 0usize;
     for check in &checks {
-        let mark = if check.ok {
-            "ok"
-        } else if check.required {
+        if !check.ok && check.required {
             failed += 1;
-            "FAIL"
-        } else {
-            "WARN"
-        };
-        println!("{:<8} {:<10} {}", mark, check.name, check.detail);
+        }
+        let mark = style::format_mark(check.ok, check.required);
+        println!("{mark:<18} {:<10} {}", check.name, check.detail);
     }
 
     if failed == 0 {
-        println!("\nall required checks passed");
+        style::print_ok("all required checks passed");
         Ok(ExitCode::SUCCESS)
     } else {
-        println!("\n{failed} required check(s) failed");
+        style::print_err(&format!("{failed} required check(s) failed"));
         Ok(ExitCode::FAILURE)
     }
 }

@@ -1,0 +1,155 @@
+.TH NEALS 1 "August 2026" "neals" "User Commands"
+.SH NAME
+neals \- local platform orchestrator for devenv projects
+.SH SYNOPSIS
+.B neals
+[\fIOPTIONS\fR]
+\fICOMMAND\fR
+.SH DESCRIPTION
+.B neals
+registers devenv projects, talks to the
+.B nealsd
+daemon over a UNIX socket, starts and stops projects, exposes HTTP routes at
+.BI {service}.{project}.localhost
+via Caddy, and provides a live log view plus a quiet project shell.
+.PP
+With the systemd system unit installed, Caddy listens on
+.B 127.0.0.1:80
+so browser URLs need no port. In ad-hoc mode (daemon auto-started by the CLI)
+Caddy listens on
+.B 127.0.0.1:2015
+and URLs must include that port.
+.SH OPTIONS
+.TP
+.BR \-y ", " \-\-yes
+Skip confirmation prompts.
+.TP
+.BR \-h ", " \-\-help
+Print help.
+.TP
+.BR \-V ", " \-\-version
+Print version.
+.SH COMMANDS
+.TP
+.B register
+Register the current directory (reads
+.B neals.name
+from
+.IR devenv.nix ).
+.TP
+.B list
+List registered projects.
+.TP
+.BI unregister " name"
+Remove a project from the registry.
+.TP
+.B prune
+Remove registry entries whose paths no longer exist.
+.TP
+.BI up " name " [ \-d ]
+Start a project. Opens a live view (routes + logs) unless
+.B \-d
+/
+.B \-\-detach
+is set. In the live view:
+.BR Ctrl+C
+or
+.B q
+detaches;
+.B Ctrl+X
+stops the project.
+.TP
+.BI down " name"
+Stop a running project.
+.TP
+.B status
+Show running projects, PIDs, and routes.
+.TP
+.BI logs " name " [ \-f ]
+Print the last log lines;
+.B \-f
+opens the live view.
+.TP
+.BI bash " name"
+Enter a quiet
+.B devenv shell
+using
+.BR $SHELL .
+bash/zsh get a short prompt
+.BI neals: name\fR.
+.TP
+.BI exec " name \-\- command\&..."
+Run a command inside the project devenv.
+.TP
+.B doctor
+Check tools, directories, HTTP bind, and daemon.
+.TP
+.B repl
+Interactive command loop.
+.TP
+.BI completions " shell"
+Print a one-line snippet to enable shell completion
+(\fBbash\fR, \fBzsh\fR, \fBfish\fR, \fBelvish\fR, \fBpowershell\fR).
+.SH FILES
+.TP
+.I ~/.config/neals/projects.json
+Project registry.
+.TP
+.I ~/.local/state/neals/
+Project logs, Caddy config, shell rc snippets.
+.TP
+.I $XDG_RUNTIME_DIR/neals/
+Ad-hoc IPC socket and per-project runtime files.
+.TP
+.I /run/neals/nealsd.sock
+System daemon IPC socket (when installed).
+.TP
+.I <project>/.neals/
+Convenience symlinks to UNIX sockets (do not bind here).
+.SH ENVIRONMENT
+.TP
+.B NEALS_SOCKET
+Override the IPC socket path.
+.TP
+.B NEALS_CADDY_HTTP_ADDR
+Override Caddy listen address (e.g.
+.BR 127.0.0.1:8080 ).
+.TP
+.B NEALS_MODE
+Set to
+.B system
+by the systemd unit (default listen
+.BR 127.0.0.1:80 ).
+.TP
+.B COMPLETE
+Used internally for dynamic shell completion
+(\fBCOMPLETE=bash neals\fR).
+.PP
+On
+.BR up ,
+TCP routes also inject
+.BI NEALS_PORT_ SERVICE
+and
+.BI NEALS_LISTEN_ SERVICE
+(and
+.B NEALS_RUNTIME
+for UNIX sockets). See the project README.
+.SH EXAMPLES
+.nf
+neals register
+neals up demo
+neals status
+neals bash demo
+neals exec demo -- php artisan migrate
+source <(COMPLETE=bash neals)
+.fi
+.SH SEE ALSO
+.BR nealsd (8),
+.BR devenv (1)
+.PP
+System install:
+.I contrib/systemd/README.md
+(after install:
+.IR /usr/local/share/doc/neals/systemd.md ).
+.SH AUTHORS
+Neals contributors.

@@ -60,7 +60,6 @@ impl CaddyManager {
 
         let (program, mut args) = caddy_command();
         if args.is_empty() && program == "caddy" {
-            // Caddy 2.x treats .json as native JSON — do not pass --adapter json
             args = vec![
                 "run".into(),
                 "--config".into(),
@@ -206,13 +205,11 @@ pub fn build_caddy_config(
         },
         "apps": {
             "http": {
-                // Keep http_port in sync with listen so Caddy does not also try :80/:443.
                 "http_port": http_port_from_addr(http_addr),
                 "https_port": https_port_from_addr(http_addr),
                 "servers": {
                     "neals": {
                         "listen": [http_addr],
-                        // Local HTTP only; HTTPS/certs are out of scope for now.
                         "automatic_https": { "disable": true },
                         "routes": routes
                     }
@@ -280,8 +277,6 @@ fn http_listen_addr() -> String {
             return addr;
         }
     }
-    // System unit sets NEALS_MODE=system and grants CAP_NET_BIND_SERVICE → :80, no port in URLs.
-    // Ad-hoc / cargo-run stays on an unprivileged port.
     if is_system_mode() {
         "127.0.0.1:80".into()
     } else {
@@ -303,7 +298,7 @@ pub fn http_port_from_addr(addr: &str) -> u16 {
 }
 
 fn https_port_from_addr(addr: &str) -> u16 {
-    // Unused while automatic_https is disabled; keep it off :443 to avoid EACCES.
+    // Keep off :443 while automatic_https is disabled (avoids EACCES).
     let p = http_port_from_addr(addr);
     if p < 1024 {
         2016
@@ -434,7 +429,6 @@ mod tests {
         assert!(text.contains("127.0.0.1:11111"));
         assert!(text.contains("127.0.0.1:11112"));
         assert!(text.contains("127.0.0.1:22222"));
-        // Same service name, different projects → different hosts (not colliding).
         assert!(text.contains(r#""be.ferrari.localhost""#));
         assert!(text.contains(r#""be.hugo-boss.localhost""#));
     }
