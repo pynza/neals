@@ -1,22 +1,59 @@
 use crate::caddy::CaddyManager;
-use neals_common::{ProjectRuntime, RouteDecl};
+use crate::ports::PortLeases;
+use neals_common::ProjectRuntime;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Instant;
 use tokio::process::Child;
 use tokio::time::{timeout, Duration};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoundTarget {
+    Unix { socket_file: String },
+    Tcp { port: u16 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundRoute {
+    pub service: String,
+    pub target: BoundTarget,
+}
+
+impl BoundRoute {
+    pub fn public_host(&self, project: &str) -> String {
+        format!("{}.{project}.localhost", self.service)
+    }
+
+    pub fn status_label(&self, project: &str) -> String {
+        match &self.target {
+            BoundTarget::Unix { .. } => self.public_host(project),
+            BoundTarget::Tcp { port } => {
+                format!("{} → 127.0.0.1:{port}", self.public_host(project))
+            }
+        }
+    }
+
+    pub fn tcp_port(&self) -> Option<u16> {
+        match self.target {
+            BoundTarget::Tcp { port } => Some(port),
+            BoundTarget::Unix { .. } => None,
+        }
+    }
+}
 
 pub struct RunningProject {
     pub name: String,
     pub child: Child,
     pub pid: u32,
     pub started_at: Instant,
-    pub routes: Vec<RouteDecl>,
-    pub project_path: std::path::PathBuf,
+    pub bound: Vec<BoundRoute>,
+    pub project_path: PathBuf,
 }
 
 pub struct AppState {
     pub projects: HashMap<String, RunningProject>,
     pub caddy: CaddyManager,
+    pub leases: PortLeases,
 }
 
 impl Default for AppState {
@@ -24,6 +61,7 @@ impl Default for AppState {
         Self {
             projects: HashMap::new(),
             caddy: CaddyManager::disabled(),
+            leases: PortLeases::default(),
         }
     }
 }
@@ -37,9 +75,9 @@ impl AppState {
                 pid: p.pid,
                 uptime_secs: p.started_at.elapsed().as_secs(),
                 routes: p
-                    .routes
+                    .bound
                     .iter()
-                    .map(|r| r.public_host(&p.name))
+                    .map(|r| r.status_label(&p.name))
                     .collect(),
             })
             .collect()
@@ -49,11 +87,25 @@ impl AppState {
         self.projects.contains_key(name)
     }
 
-    pub fn route_snapshot(&self) -> Vec<(String, Vec<RouteDecl>)> {
+    pub fn route_snapshot(&self) -> Vec<(String, Vec<BoundRoute>)> {
         self.projects
             .values()
-            .map(|p| (p.name.clone(), p.routes.clone()))
+            .map(|p| (p.name.clone(), p.bound.clone()))
             .collect()
+    }
+
+    /// Release leases, cleanup `.neals/`, refresh Caddy. Project must already be removed.
+    pub async fn finish_cleanup(&mut self, running: &RunningProject) {
+        for route in &running.bound {
+            if let Some(port) = route.tcp_port() {
+                self.leases.release(port);
+            }
+        }
+        let _ = crate::caddy::cleanup_neals_dir(&running.project_path);
+        let snapshot = self.route_snapshot();
+        if let Err(err) = self.caddy.apply_routes(&snapshot).await {
+            eprintln!("caddy apply after cleanup `{}`: {err:#}", running.name);
+        }
     }
 
     pub async fn stop(&mut self, name: &str) -> Result<(), String> {
@@ -61,12 +113,31 @@ impl AppState {
             return Err(format!("project `{name}` is not running"));
         };
         stop_process_group(running.pid, &mut running.child).await;
-        let _ = crate::caddy::cleanup_neals_dir(&running.project_path);
-        let snapshot = self.route_snapshot();
-        if let Err(err) = self.caddy.apply_routes(&snapshot).await {
-            return Err(err.to_string());
-        }
+        self.finish_cleanup(&running).await;
         Ok(())
+    }
+
+    /// Reap children that exited on their own (crash/OOM) — same cleanup as Down.
+    pub async fn reap_exited(&mut self) {
+        let mut dead = Vec::new();
+        for (name, project) in self.projects.iter_mut() {
+            match project.child.try_wait() {
+                Ok(Some(status)) => {
+                    eprintln!("project `{name}` exited unexpectedly ({status}); cleaning up");
+                    dead.push(name.clone());
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    eprintln!("try_wait `{name}`: {err}; cleaning up");
+                    dead.push(name.clone());
+                }
+            }
+        }
+        for name in dead {
+            if let Some(running) = self.projects.remove(&name) {
+                self.finish_cleanup(&running).await;
+            }
+        }
     }
 
     pub async fn stop_all(&mut self) {

@@ -24,15 +24,33 @@ impl ProjectName {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RouteKind {
+    Unix { socket_file: String },
+    Tcp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteDecl {
     pub service: String,
-    pub socket_file: String,
+    pub kind: RouteKind,
 }
 
 impl RouteDecl {
     pub fn public_host(&self, project: &str) -> String {
         format!("{}.{project}.localhost", self.service)
     }
+}
+
+/// Normalize a service name for env vars: `api-backend` → `API_BACKEND`.
+pub fn env_service_key(service: &str) -> String {
+    service
+        .chars()
+        .map(|c| match c {
+            '-' => '_',
+            c if c.is_ascii_alphanumeric() => c.to_ascii_uppercase(),
+            _ => '_',
+        })
+        .collect()
 }
 
 /// Extract literal `neals.name = "..."` from Nix source via rnix AST.
@@ -48,7 +66,7 @@ pub fn parse_neals_name(src: &str) -> Option<String> {
     }
 }
 
-/// Extract `neals.route.<service> = "file.sock"` literal bindings.
+/// Extract `neals.route.<service> = "file.sock" | "tcp"` literal bindings.
 pub fn parse_neals_routes(src: &str) -> Result<Vec<RouteDecl>> {
     let bindings = collect_neals_bindings(src)?;
     let mut routes = Vec::new();
@@ -62,18 +80,24 @@ pub fn parse_neals_routes(src: &str) -> Result<Vec<RouteDecl>> {
         if !is_valid_service_name(service) {
             bail!("invalid neals.route service name `{service}`");
         }
-        if !is_valid_socket_file(&value) {
+        let kind = if value == "tcp" {
+            RouteKind::Tcp
+        } else if is_valid_socket_file(&value) {
+            RouteKind::Unix {
+                socket_file: value.clone(),
+            }
+        } else {
             bail!(
-                "invalid neals.route.{service} socket file `{value}` \
-                 (expected a bare filename like backend.sock)"
+                "invalid neals.route.{service} value `{value}` \
+                 (expected \"tcp\" or a bare filename like backend.sock)"
             );
-        }
+        };
         if let Some(prev) = seen.insert(service.clone(), value.clone()) {
             bail!("duplicate neals.route.{service} (`{prev}` and `{value}`)");
         }
         routes.push(RouteDecl {
             service: service.clone(),
-            socket_file: value.clone(),
+            kind,
         });
     }
 
@@ -97,6 +121,7 @@ pub fn is_valid_service_name(name: &str) -> bool {
 
 pub fn is_valid_socket_file(name: &str) -> bool {
     !name.is_empty()
+        && name != "tcp"
         && !name.contains('/')
         && !name.contains('\0')
         && name != "."
@@ -312,7 +337,9 @@ mod tests {
             routes,
             vec![RouteDecl {
                 service: "backend".into(),
-                socket_file: "backend.sock".into(),
+                kind: RouteKind::Unix {
+                    socket_file: "backend.sock".into(),
+                },
             }]
         );
     }
@@ -330,6 +357,38 @@ mod tests {
         assert_eq!(routes.len(), 2);
         assert_eq!(routes[0].service, "backend");
         assert_eq!(routes[1].service, "web");
+    }
+
+    #[test]
+    fn parse_tcp_and_unix_mix() {
+        let src = r#"
+          {
+            neals.route.web = "web.sock";
+            neals.route.api = "tcp";
+            neals.route.api-backend = "tcp";
+          }
+        "#;
+        let routes = parse_neals_routes(src).unwrap();
+        assert_eq!(routes.len(), 3);
+        assert_eq!(
+            routes.iter().find(|r| r.service == "api").unwrap().kind,
+            RouteKind::Tcp
+        );
+        assert_eq!(
+            routes
+                .iter()
+                .find(|r| r.service == "api-backend")
+                .unwrap()
+                .kind,
+            RouteKind::Tcp
+        );
+    }
+
+    #[test]
+    fn env_service_key_normalizes() {
+        assert_eq!(env_service_key("api"), "API");
+        assert_eq!(env_service_key("api-backend"), "API_BACKEND");
+        assert_eq!(env_service_key("web2"), "WEB2");
     }
 
     #[test]

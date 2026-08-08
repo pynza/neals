@@ -1,5 +1,6 @@
 mod caddy;
 mod handler;
+mod ports;
 mod state;
 
 pub use handler::handle_request;
@@ -16,6 +17,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal;
 use tokio::sync::Mutex;
+use tokio::time::{interval, Duration};
 
 pub async fn run() -> Result<()> {
     let runtime = runtime_dir()?;
@@ -33,8 +35,10 @@ pub async fn run() -> Result<()> {
     let state = Arc::new(Mutex::new(AppState {
         projects: Default::default(),
         caddy,
+        leases: Default::default(),
     }));
     let state_accept = Arc::clone(&state);
+    let state_reap = Arc::clone(&state);
 
     let accept_loop = async move {
         loop {
@@ -54,8 +58,18 @@ pub async fn run() -> Result<()> {
         }
     };
 
+    let reap_loop = async move {
+        let mut tick = interval(Duration::from_secs(1));
+        loop {
+            tick.tick().await;
+            let mut state = state_reap.lock().await;
+            state.reap_exited().await;
+        }
+    };
+
     tokio::select! {
         _ = accept_loop => {}
+        _ = reap_loop => {}
         _ = shutdown_signal() => {
             eprintln!("shutting down");
         }

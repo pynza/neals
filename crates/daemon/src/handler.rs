@@ -1,6 +1,9 @@
 use crate::caddy::{ensure_neals_symlinks, project_runtime_dir};
-use crate::state::{AppState, RunningProject};
-use neals_common::{ensure_dir, read_neals_routes, state_dir, Registry, Request, Response};
+use crate::state::{AppState, BoundRoute, BoundTarget, RunningProject};
+use neals_common::{
+    ensure_dir, env_service_key, read_neals_routes, state_dir, Registry, Request, Response,
+    RouteKind,
+};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -60,15 +63,22 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
     ensure_dir(&runtime_proj).map_err(|e| e.to_string())?;
     ensure_neals_symlinks(&project.path, name, &routes).map_err(|e| e.to_string())?;
 
+    let bound = {
+        let mut state = state.lock().await;
+        match bind_routes(&mut state, &routes) {
+            Ok(bound) => bound,
+            Err(err) => return Err(err),
+        }
+    };
+
     {
         let mut state = state.lock().await;
         let mut snapshot = state.route_snapshot();
-        snapshot.push((name.to_string(), routes.clone()));
-        state
-            .caddy
-            .apply_routes(&snapshot)
-            .await
-            .map_err(|e| e.to_string())?;
+        snapshot.push((name.to_string(), bound.clone()));
+        if let Err(e) = state.caddy.apply_routes(&snapshot).await {
+            release_bound_ports(&mut state, &bound);
+            return Err(e.to_string());
+        }
     }
 
     let log_path = project_log_path(name).map_err(|e| e.to_string())?;
@@ -90,6 +100,17 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_err));
 
+    for route in &bound {
+        if let BoundTarget::Tcp { port } = route.target {
+            let key = env_service_key(&route.service);
+            cmd.env(format!("NEALS_PORT_{key}"), port.to_string());
+            cmd.env(
+                format!("NEALS_LISTEN_{key}"),
+                format!("127.0.0.1:{port}"),
+            );
+        }
+    }
+
     #[cfg(unix)]
     {
         cmd.process_group(0);
@@ -99,6 +120,7 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
         Ok(child) => child,
         Err(e) => {
             let mut state = state.lock().await;
+            release_bound_ports(&mut state, &bound);
             let snapshot = state.route_snapshot();
             let _ = state.caddy.apply_routes(&snapshot).await;
             return Err(format!("failed to spawn `{program}`: {e}"));
@@ -108,6 +130,7 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
         Some(pid) => pid,
         None => {
             let mut state = state.lock().await;
+            release_bound_ports(&mut state, &bound);
             let snapshot = state.route_snapshot();
             let _ = state.caddy.apply_routes(&snapshot).await;
             return Err(format!("spawned `{program}` has no pid"));
@@ -117,6 +140,7 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
     let mut state = state.lock().await;
     if state.is_running(name) {
         stop_spawned(pid, &mut child).await;
+        release_bound_ports(&mut state, &bound);
         let snapshot = state.route_snapshot();
         let _ = state.caddy.apply_routes(&snapshot).await;
         return Err(format!("project `{name}` is already running"));
@@ -128,11 +152,45 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
             child,
             pid,
             started_at: Instant::now(),
-            routes,
+            bound,
             project_path: project.path,
         },
     );
     Ok(())
+}
+
+fn bind_routes(
+    state: &mut AppState,
+    routes: &[neals_common::RouteDecl],
+) -> Result<Vec<BoundRoute>, String> {
+    let mut bound = Vec::with_capacity(routes.len());
+    for decl in routes {
+        let target = match &decl.kind {
+            RouteKind::Unix { socket_file } => BoundTarget::Unix {
+                socket_file: socket_file.clone(),
+            },
+            RouteKind::Tcp => {
+                let port = state
+                    .leases
+                    .allocate()
+                    .map_err(|e| format!("TCP port alloc for `{}`: {e}", decl.service))?;
+                BoundTarget::Tcp { port }
+            }
+        };
+        bound.push(BoundRoute {
+            service: decl.service.clone(),
+            target,
+        });
+    }
+    Ok(bound)
+}
+
+fn release_bound_ports(state: &mut AppState, bound: &[BoundRoute]) {
+    for route in bound {
+        if let Some(port) = route.tcp_port() {
+            state.leases.release(port);
+        }
+    }
 }
 
 fn project_log_path(name: &str) -> anyhow::Result<PathBuf> {

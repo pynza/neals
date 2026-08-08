@@ -11,31 +11,59 @@ Project name: set `neals.name = "my-app";` in `devenv.nix` (folder name is fallb
 ## HTTP routes (Caddy)
 
 Declare HTTP services in `devenv.nix`. `nealsd` runs a dedicated Caddy and proxies
-`{service}.{project}.localhost` to a UNIX socket under the project runtime dir.
+`{service}.{project}.localhost` to a UNIX socket or a loopback TCP port.
 
 ```nix
-{ pkgs, ... }: {
-  neals.name = "demo";
-  neals.route.backend = "backend.sock";
+{ pkgs, lib, ... }: {
+  # Declare `neals` in an import so the rest of the file stays flat.
+  imports = [
+    ({ lib, ... }: {
+      options.neals = lib.mkOption {
+        type = lib.types.attrs;
+        default = { };
+      };
+    })
+  ];
+
+  neals = {
+    name = "demo";
+    route = {
+      backend = "backend.sock";  # UNIX
+      api = "tcp";               # TCP (nealsd assigns port)
+    };
+  };
 }
 ```
 
 On `neals up`:
 
-- Creates `$XDG_RUNTIME_DIR/neals/<project>/` (bind path for your app)
-- Sets `NEALS_RUNTIME` to that directory for the `devenv up` process
-- Symlinks `<project>/.neals/<file>.sock` → the runtime socket (**client convenience only** — do **not** bind on `.neals/`)
-- Loads Caddy routes (Admin API). HTTP listens on `127.0.0.1:80` when permitted, else `127.0.0.1:2015` (`NEALS_CADDY_HTTP_ADDR` overrides)
+- Creates `$XDG_RUNTIME_DIR/neals/<project>/`
+- Sets `NEALS_RUNTIME` for the `devenv up` process
+- **UNIX:** symlinks `<project>/.neals/<file>.sock` → runtime socket (**client convenience only** — do **not** bind on `.neals/`)
+- **TCP:** allocates a free `127.0.0.1` port, leases it until Down/crash, injects env (see below)
+- Loads Caddy routes. HTTP listens on `127.0.0.1:2015` by default (`NEALS_CADDY_HTTP_ADDR` overrides)
 
-Example app listen path: `$NEALS_RUNTIME/backend.sock`.
+### TCP env vars
+
+Service names are normalized: uppercase, `-` → `_`.
+
+| `devenv.nix` | Env |
+|---|---|
+| `neals.route.api = "tcp"` | `NEALS_PORT_API`, `NEALS_LISTEN_API=127.0.0.1:<port>` |
+| `neals.route.api-backend = "tcp"` | `NEALS_PORT_API_BACKEND`, `NEALS_LISTEN_API_BACKEND=…` |
+
+App contract: bind **exactly** on `127.0.0.1` at that port (not `0.0.0.0`).
+
+If `devenv up` crashes, `nealsd` reaps the child, frees port leases, and updates Caddy.
 
 ```bash
 neals up demo
 curl -H 'Host: backend.demo.localhost' http://127.0.0.1:2015/
-# or: curl --unix-socket .neals/backend.sock http://localhost/
+curl -H 'Host: api.demo.localhost' http://127.0.0.1:2015/
+# unix client: curl --unix-socket .neals/backend.sock http://localhost/
 ```
 
-Only HTTP belongs in `neals.route.*`. Redis/MariaDB/etc. use their own sockets or TCP and are configured in the app `.env`, not via Caddy.
+Only HTTP belongs in `neals.route.*`. Redis/MariaDB use their own sockets/TCP in the app `.env`, not via Caddy.
 
 ## Daemon + project lifecycle
 
