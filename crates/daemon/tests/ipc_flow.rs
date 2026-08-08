@@ -72,6 +72,20 @@ impl TestEnv {
             _guard: guard,
         }
     }
+
+    fn add_project(&self, name: &str, devenv_nix: &str) {
+        let project_dir = self.root.join(format!("{name}-project"));
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(project_dir.join("devenv.nix"), devenv_nix).unwrap();
+        let mut registry = Registry::load().unwrap();
+        registry
+            .add(Project {
+                name: name.into(),
+                path: project_dir,
+            })
+            .unwrap();
+        registry.save().unwrap();
+    }
 }
 
 impl Drop for TestEnv {
@@ -113,9 +127,9 @@ async fn ping_up_status_down() {
             assert!(projects[0]
                 .routes
                 .iter()
-                .any(|r| r == "backend.demo.localhost"));
+                .any(|r| r == "http://backend.demo.localhost:2015/"));
             assert!(projects[0].routes.iter().any(|r| {
-                r.starts_with("api.demo.localhost → 127.0.0.1:")
+                r.starts_with("http://api.demo.localhost:2015/ → 127.0.0.1:")
             }));
         }
         other => panic!("expected Status, got {other:?}"),
@@ -291,4 +305,88 @@ async fn crashed_up_process_is_reaped_and_ports_released() {
         .await,
         Response::Ok
     );
+}
+
+#[tokio::test]
+async fn multi_project_tcp_routes_have_distinct_hosts_and_ports() {
+    let env = TestEnv::setup();
+    env.add_project(
+        "other",
+        r#"{
+          neals.name = "other";
+          neals.route.be = "tcp";
+        }"#,
+    );
+    // demo already has api=tcp from setup; give it a be=tcp too via rewrite
+    fs::write(
+        env.root.join("demo-project").join("devenv.nix"),
+        r#"{
+          neals.name = "demo";
+          neals.route.be = "tcp";
+        }"#,
+    )
+    .unwrap();
+
+    let state = Arc::new(Mutex::new(AppState::default()));
+
+    assert_eq!(
+        roundtrip(
+            &state,
+            Request::Up {
+                project: "demo".into()
+            }
+        )
+        .await,
+        Response::Ok
+    );
+    assert_eq!(
+        roundtrip(
+            &state,
+            Request::Up {
+                project: "other".into()
+            }
+        )
+        .await,
+        Response::Ok
+    );
+
+    match roundtrip(&state, Request::Status).await {
+        Response::Status { projects } => {
+            assert_eq!(projects.len(), 2);
+            let demo = projects.iter().find(|p| p.name == "demo").unwrap();
+            let other = projects.iter().find(|p| p.name == "other").unwrap();
+
+            let demo_route = demo
+                .routes
+                .iter()
+                .find(|r| r.starts_with("http://be.demo.localhost:2015/ → 127.0.0.1:"))
+                .expect("demo be route");
+            let other_route = other
+                .routes
+                .iter()
+                .find(|r| r.starts_with("http://be.other.localhost:2015/ → 127.0.0.1:"))
+                .expect("other be route");
+
+            let demo_port: u16 = demo_route.rsplit(':').next().unwrap().parse().unwrap();
+            let other_port: u16 = other_route.rsplit(':').next().unwrap().parse().unwrap();
+            assert_ne!(demo_port, other_port, "projects must not share TCP ports");
+            assert_ne!(demo_route, other_route);
+        }
+        other => panic!("expected Status, got {other:?}"),
+    }
+
+    let _ = roundtrip(
+        &state,
+        Request::Down {
+            project: "demo".into()
+        },
+    )
+    .await;
+    let _ = roundtrip(
+        &state,
+        Request::Down {
+            project: "other".into()
+        },
+    )
+    .await;
 }

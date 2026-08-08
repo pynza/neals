@@ -45,8 +45,40 @@ pub fn projects_file() -> Result<PathBuf> {
     Ok(config_dir()?.join("projects.json"))
 }
 
+/// Socket path used by the systemd system unit (`nealsd@.service`).
+pub const SYSTEM_DAEMON_SOCKET: &str = "/run/neals/nealsd.sock";
+
+/// Resolve the nealsd IPC socket.
+///
+/// Order: `NEALS_SOCKET` → system socket if present → `$XDG_RUNTIME_DIR/neals/nealsd.sock`.
 pub fn daemon_socket() -> Result<PathBuf> {
-    Ok(runtime_dir()?.join("nealsd.sock"))
+    Ok(daemon_socket_with(
+        std::env::var_os("NEALS_SOCKET"),
+        Path::new(SYSTEM_DAEMON_SOCKET).exists(),
+        runtime_dir()?,
+    ))
+}
+
+pub fn is_system_daemon_socket(path: &Path) -> bool {
+    path == Path::new(SYSTEM_DAEMON_SOCKET)
+}
+
+fn daemon_socket_with(
+    neals_socket: Option<OsString>,
+    system_socket_exists: bool,
+    runtime: PathBuf,
+) -> PathBuf {
+    if let Some(raw) = neals_socket {
+        let s = raw.to_string_lossy();
+        let trimmed = s.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    if system_socket_exists {
+        return PathBuf::from(SYSTEM_DAEMON_SOCKET);
+    }
+    runtime.join("nealsd.sock")
 }
 
 pub fn ensure_dir(path: &Path) -> Result<()> {
@@ -91,7 +123,28 @@ mod tests {
     #[test]
     fn daemon_socket_joins_runtime_dir() {
         let runtime = runtime_dir_with(Some(OsString::from("/run/user/1000")));
-        assert_eq!(runtime.join("nealsd.sock"), PathBuf::from("/run/user/1000/neals/nealsd.sock"));
+        assert_eq!(
+            daemon_socket_with(None, false, runtime),
+            PathBuf::from("/run/user/1000/neals/nealsd.sock")
+        );
+    }
+
+    #[test]
+    fn daemon_socket_prefers_env_override() {
+        let runtime = PathBuf::from("/run/user/1000/neals");
+        assert_eq!(
+            daemon_socket_with(Some(OsString::from("/tmp/custom.sock")), true, runtime),
+            PathBuf::from("/tmp/custom.sock")
+        );
+    }
+
+    #[test]
+    fn daemon_socket_prefers_system_when_present() {
+        let runtime = PathBuf::from("/run/user/1000/neals");
+        assert_eq!(
+            daemon_socket_with(None, true, runtime),
+            PathBuf::from(SYSTEM_DAEMON_SOCKET)
+        );
     }
 
     #[test]

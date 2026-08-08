@@ -10,7 +10,7 @@ use clap_complete::{
 };
 use comfy_table::{Cell, Table};
 use daemon_client::with_daemon;
-use logs::print_project_logs;
+use logs::{follow_project_logs, print_project_logs};
 use neals_common::{
     resolve_project_name, Project, ProjectName, Registry, Request, Response,
 };
@@ -44,10 +44,13 @@ enum Commands {
     },
     /// Remove registry entries whose paths no longer exist
     Prune,
-    /// Start a project via nealsd (`devenv up`)
+    /// Start a project via nealsd (`devenv up`), then follow its logs
     Up {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
+        /// Do not follow logs after start
+        #[arg(short = 'd', long = "detach")]
+        detach: bool,
     },
     /// Stop a project via nealsd
     Down {
@@ -138,8 +141,8 @@ fn run() -> Result<ExitCode> {
             cmd_prune(cli.yes)?;
             Ok(ExitCode::SUCCESS)
         }
-        Commands::Up { project } => {
-            cmd_up(&project)?;
+        Commands::Up { project, detach } => {
+            cmd_up(&project, detach)?;
             Ok(ExitCode::SUCCESS)
         }
         Commands::Down { project } => {
@@ -296,13 +299,26 @@ fn cmd_prune(yes: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_up(project: &str) -> Result<()> {
+fn cmd_up(project: &str, detach: bool) -> Result<()> {
     match with_daemon(Request::Up {
         project: project.to_string(),
     })? {
         Response::Ok => {
             println!("started `{project}`");
-            Ok(())
+            if let Ok(Response::Status { projects }) = with_daemon(Request::Status) {
+                if let Some(p) = projects.iter().find(|p| p.name == project) {
+                    for route in &p.routes {
+                        println!("  → {route}");
+                    }
+                }
+            }
+            if detach {
+                println!("detached; use `neals logs {project} -f` to follow");
+                return Ok(());
+            }
+            println!("--- logs (Ctrl+C stops following; project keeps running) ---");
+            // Ctrl+C ends the CLI process; project stays up under nealsd.
+            follow_project_logs(project)
         }
         Response::Error { message } => bail!("{message}"),
         other => bail!("unexpected response from nealsd: {other:?}"),

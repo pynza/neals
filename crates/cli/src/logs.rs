@@ -98,6 +98,25 @@ pub fn print_project_logs(project: &str, follow: bool) -> Result<()> {
     Ok(())
 }
 
+/// Follow a project log from the current end (no historical tail). Used after `neals up`.
+pub fn follow_project_logs(project: &str) -> Result<()> {
+    let path = project_log_path(project)?;
+    // File is created on Up; wait briefly if spawn is racing the open.
+    for _ in 0..20 {
+        if path.is_file() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    if !path.is_file() {
+        bail!(
+            "no log file for project `{project}` at {} yet",
+            path.display()
+        );
+    }
+    follow_log(&path)
+}
+
 fn follow_log(path: &Path) -> Result<()> {
     let mut file = File::open(path)
         .with_context(|| format!("failed to open {}", path.display()))?;

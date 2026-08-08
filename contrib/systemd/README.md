@@ -1,0 +1,121 @@
+# System daemon (portless URLs)
+
+Goal: open `http://admin.ferrari.localhost/` with **no port** in the URL, without
+lowering privileged ports for every process on the machine.
+
+## Model
+
+Same pattern as nginx / cups / Docker:
+
+| Who | Privileges |
+|-----|------------|
+| Your shell / `neals` CLI | unprivileged |
+| `nealsd` (systemd **system** unit) | `CAP_NET_BIND_SERVICE` only |
+| Caddy (child of `nealsd`) | inherits that capability → binds `127.0.0.1:80` |
+
+We do **not** use `net.ipv4.ip_unprivileged_port_start` (that would open low
+ports to all user processes).
+
+The unit runs **as your login user** (`nealsd@alice.service`) so config stays in
+`~/.config/neals`, project paths under your home work, and `devenv` / nix on your
+PATH keep working. Root is only needed once to install the unit and grant the
+capability.
+
+## Quick install
+
+```bash
+cargo build --release -p neals -p nealsd
+sudo ./contrib/systemd/install.sh "$USER"
+neals doctor
+neals up my-app -d
+# → http://backend.my-app.localhost/
+```
+
+`install.sh`:
+
+1. Copies `neals` / `nealsd` to `/usr/local/bin` (override with `PREFIX=…`)
+2. Installs `nealsd@.service` under `/etc/systemd/system/`
+3. `systemctl enable --now nealsd@$USER`
+
+## Manual install
+
+```bash
+sudo install -Dm755 target/release/nealsd /usr/local/bin/nealsd
+sudo install -Dm755 target/release/neals /usr/local/bin/neals
+sudo cp contrib/systemd/nealsd@.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now "nealsd@$USER"
+```
+
+## Day-to-day UX
+
+```bash
+neals up ferrari          # prints http://admin.ferrari.localhost/ …
+# browser: http://admin.ferrari.localhost/
+neals status
+neals down ferrari
+```
+
+No sudo for daily use. If the daemon is down:
+
+```bash
+sudo systemctl start "nealsd@$USER"
+# logs:
+journalctl -u "nealsd@$USER" -f
+```
+
+## How the CLI finds the daemon
+
+1. `NEALS_SOCKET` if set  
+2. `/run/neals/nealsd.sock` if that file exists (system unit)  
+3. else `$XDG_RUNTIME_DIR/neals/nealsd.sock` (ad-hoc / `cargo run`)
+
+While the system socket path exists, the CLI **will not** auto-start a second
+user-level daemon; it tells you to `systemctl start` instead.
+
+## Ad-hoc / development (no install)
+
+```bash
+cargo run -p nealsd          # NEALS_MODE unset → Caddy on :2015
+cargo run -p neals -- up demo
+# → http://backend.demo.localhost:2015/
+```
+
+| Mode | Env | Listen | URL |
+|------|-----|--------|-----|
+| System unit | `NEALS_MODE=system` | `127.0.0.1:80` | `http://svc.proj.localhost/` |
+| Ad-hoc | (unset) | `127.0.0.1:2015` | `http://svc.proj.localhost:2015/` |
+
+Override anytime: `NEALS_CADDY_HTTP_ADDR=127.0.0.1:8080`.
+
+## Security notes
+
+- Capability is **only** on the `nealsd@$USER` service (and its children), not
+  machine-wide.
+- `CapabilityBoundingSet` prevents the daemon from gaining other caps.
+- `NoNewPrivileges=true` blocks setuid elevation from the service tree.
+- Caddy listens on **loopback only** (`127.0.0.1:80`), not on the LAN.
+- Stop / remove:
+
+  ```bash
+  sudo systemctl disable --now "nealsd@$USER"
+  sudo rm /etc/systemd/system/nealsd@.service
+  sudo systemctl daemon-reload
+  ```
+
+## Requirements
+
+- Linux + systemd  
+- `caddy` on the service user’s PATH (login shell PATH may differ from systemd;
+  if Caddy is missing, put a drop-in:
+
+  ```bash
+  sudo systemctl edit "nealsd@$USER"
+  ```
+
+  ```ini
+  [Service]
+  Environment=PATH=/home/YOU/.nix-profile/bin:/usr/local/bin:/usr/bin
+  ```
+
+- Port 80 free on loopback (nothing else bound to `127.0.0.1:80`)

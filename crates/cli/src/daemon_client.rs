@@ -1,5 +1,8 @@
 use anyhow::{bail, Context, Result};
-use neals_common::{call_daemon, ensure_dir, state_dir, Request, Response};
+use neals_common::{
+    call_daemon, daemon_socket, ensure_dir, is_system_daemon_socket, state_dir, Request, Response,
+    SYSTEM_DAEMON_SOCKET,
+};
 use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -15,6 +18,17 @@ pub fn ensure_daemon() -> Result<()> {
     if ping_ok() {
         return Ok(());
     }
+
+    let sock = daemon_socket()?;
+    if is_system_daemon_socket(&sock) {
+        bail!(
+            "system nealsd is not running (socket {SYSTEM_DAEMON_SOCKET}).\n\
+             Start it with:\n\
+               sudo systemctl start 'nealsd@$USER'\n\
+             Or see contrib/systemd/README.md"
+        );
+    }
+
     start_nealsd()?;
     // nealsd may wait up to ~5s for caddy admin before accepting ping
     for _ in 0..40 {

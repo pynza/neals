@@ -115,9 +115,14 @@ impl CaddyManager {
             sleep(Duration::from_millis(100)).await;
         }
         bail!(
-            "caddy admin socket not ready: {}",
-            self.admin_sock.display()
+            "caddy admin socket not ready: {} (listen {})",
+            self.admin_sock.display(),
+            self.http_addr
         )
+    }
+
+    pub fn http_addr(&self) -> &str {
+        &self.http_addr
     }
 
     pub async fn apply_routes(&mut self, projects: &[(String, Vec<BoundRoute>)]) -> Result<()> {
@@ -201,12 +206,14 @@ pub fn build_caddy_config(
         },
         "apps": {
             "http": {
-                // Avoid binding privileged :80/:443 during config reload (permission denied).
-                "http_port": 2015,
-                "https_port": 2016,
+                // Keep http_port in sync with listen so Caddy does not also try :80/:443.
+                "http_port": http_port_from_addr(http_addr),
+                "https_port": https_port_from_addr(http_addr),
                 "servers": {
                     "neals": {
                         "listen": [http_addr],
+                        // Local HTTP only; HTTPS/certs are out of scope for now.
+                        "automatic_https": { "disable": true },
                         "routes": routes
                     }
                 }
@@ -273,9 +280,36 @@ fn http_listen_addr() -> String {
             return addr;
         }
     }
-    // Default to an unprivileged port. Probing :80 is racy (bind may succeed then
-    // caddy still fails), and Caddy also uses http_port 80 unless overridden.
-    "127.0.0.1:2015".into()
+    // System unit sets NEALS_MODE=system and grants CAP_NET_BIND_SERVICE → :80, no port in URLs.
+    // Ad-hoc / cargo-run stays on an unprivileged port.
+    if is_system_mode() {
+        "127.0.0.1:80".into()
+    } else {
+        "127.0.0.1:2015".into()
+    }
+}
+
+fn is_system_mode() -> bool {
+    matches!(
+        std::env::var("NEALS_MODE").as_deref().map(str::trim),
+        Ok("system")
+    )
+}
+
+pub fn http_port_from_addr(addr: &str) -> u16 {
+    addr.rsplit_once(':')
+        .and_then(|(_, p)| p.parse().ok())
+        .unwrap_or(2015)
+}
+
+fn https_port_from_addr(addr: &str) -> u16 {
+    // Unused while automatic_https is disabled; keep it off :443 to avoid EACCES.
+    let p = http_port_from_addr(addr);
+    if p < 1024 {
+        2016
+    } else {
+        p.saturating_add(1)
+    }
 }
 
 pub fn project_runtime_dir(project: &str) -> Result<PathBuf> {
@@ -363,5 +397,53 @@ mod tests {
         assert!(text.contains("api.demo.localhost"));
         assert!(text.contains("127.0.0.1:38471"));
         assert!(text.contains("127.0.0.1:2015"));
+        assert!(text.contains("automatic_https"));
+    }
+
+    #[test]
+    fn build_config_keeps_multi_project_hosts_and_ports_distinct() {
+        let admin = PathBuf::from("/tmp/neals/caddy-admin.sock");
+        let log = PathBuf::from("/tmp/neals/caddy.log");
+        let projects = [
+            (
+                "ferrari".into(),
+                vec![
+                    BoundRoute {
+                        service: "be".into(),
+                        target: BoundTarget::Tcp { port: 11111 },
+                    },
+                    BoundRoute {
+                        service: "admin".into(),
+                        target: BoundTarget::Tcp { port: 11112 },
+                    },
+                ],
+            ),
+            (
+                "hugo-boss".into(),
+                vec![BoundRoute {
+                    service: "be".into(),
+                    target: BoundTarget::Tcp { port: 22222 },
+                }],
+            ),
+        ];
+        let cfg = build_caddy_config(&admin, "127.0.0.1:2015", &log, &projects);
+        let text = cfg.to_string();
+        assert!(text.contains("be.ferrari.localhost"));
+        assert!(text.contains("admin.ferrari.localhost"));
+        assert!(text.contains("be.hugo-boss.localhost"));
+        assert!(text.contains("127.0.0.1:11111"));
+        assert!(text.contains("127.0.0.1:11112"));
+        assert!(text.contains("127.0.0.1:22222"));
+        // Same service name, different projects → different hosts (not colliding).
+        assert!(text.contains(r#""be.ferrari.localhost""#));
+        assert!(text.contains(r#""be.hugo-boss.localhost""#));
+    }
+
+    #[test]
+    fn http_port_follows_listen_addr() {
+        assert_eq!(http_port_from_addr("127.0.0.1:80"), 80);
+        assert_eq!(http_port_from_addr("127.0.0.1:2015"), 2015);
+        assert_eq!(https_port_from_addr("127.0.0.1:80"), 2016);
+        assert_eq!(https_port_from_addr("127.0.0.1:2015"), 2016);
     }
 }

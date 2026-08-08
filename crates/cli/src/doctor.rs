@@ -2,7 +2,10 @@ use crate::daemon_client::find_nealsd;
 use anyhow::Result;
 use neals_common::{
     call_daemon, config_dir, ensure_dir, runtime_dir, state_dir, Request, Response,
+    SYSTEM_DAEMON_SOCKET,
 };
+use std::io::ErrorKind;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -20,6 +23,8 @@ pub fn run_doctor() -> Result<ExitCode> {
         check_on_path("nix", &["--version"], true),
         check_devenv(),
         check_on_path("caddy", &["version"], true),
+        check_system_daemon(),
+        check_caddy_http_bind(),
         check_dir_writable("config", config_dir()?),
         check_dir_writable("state", state_dir()?),
         check_dir_writable("runtime", runtime_dir()?),
@@ -145,6 +150,89 @@ fn check_devenv() -> Check {
     check_on_path("devenv", &["--version"], true)
 }
 
+fn check_system_daemon() -> Check {
+    let sock = Path::new(SYSTEM_DAEMON_SOCKET);
+    if sock.exists() {
+        Check {
+            name: "system".into(),
+            ok: true,
+            required: false,
+            detail: format!(
+                "{SYSTEM_DAEMON_SOCKET} present (HTTP :80, URLs without port)"
+            ),
+        }
+    } else {
+        Check {
+            name: "system".into(),
+            ok: false,
+            required: false,
+            detail: "not installed — ad-hoc daemon uses :2015. For clean URLs: contrib/systemd/"
+                .into(),
+        }
+    }
+}
+
+fn check_caddy_http_bind() -> Check {
+    let addr = std::env::var("NEALS_CADDY_HTTP_ADDR")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            if Path::new(SYSTEM_DAEMON_SOCKET).exists() {
+                "127.0.0.1:80".into()
+            } else {
+                "127.0.0.1:2015".into()
+            }
+        });
+    let Some((host, port_s)) = addr.rsplit_once(':') else {
+        return Check {
+            name: "http-bind".into(),
+            ok: false,
+            required: true,
+            detail: format!("invalid NEALS_CADDY_HTTP_ADDR `{addr}` (want host:port)"),
+        };
+    };
+    let Ok(port) = port_s.parse::<u16>() else {
+        return Check {
+            name: "http-bind".into(),
+            ok: false,
+            required: true,
+            detail: format!("invalid port in `{addr}`"),
+        };
+    };
+    match TcpListener::bind((host, port)) {
+        Ok(listener) => {
+            drop(listener);
+            Check {
+                name: "http-bind".into(),
+                ok: true,
+                required: true,
+                detail: format!("can bind {addr}"),
+            }
+        }
+        Err(err) if err.kind() == ErrorKind::AddrInUse => Check {
+            name: "http-bind".into(),
+            ok: true,
+            required: true,
+            detail: format!("{addr} already in use (ok if neals caddy owns it)"),
+        },
+        Err(err) if err.kind() == ErrorKind::PermissionDenied => Check {
+            name: "http-bind".into(),
+            ok: false,
+            required: true,
+            detail: format!(
+                "cannot bind {addr}: permission denied (use an unprivileged port, \
+                 e.g. NEALS_CADDY_HTTP_ADDR=127.0.0.1:2015)"
+            ),
+        },
+        Err(err) => Check {
+            name: "http-bind".into(),
+            ok: false,
+            required: true,
+            detail: format!("cannot bind {addr}: {err}"),
+        },
+    }
+}
+
 fn check_dir_writable(label: &str, path: PathBuf) -> Check {
     match ensure_dir(&path).and_then(|_| probe_write(&path)) {
         Ok(()) => Check {
@@ -183,11 +271,20 @@ fn check_daemon_ping() -> Check {
             required: true,
             detail: format!("unexpected response: {other:?}"),
         },
-        Err(_) => Check {
-            name: "daemon".into(),
-            ok: true,
-            required: true,
-            detail: "not running (will auto-start on `neals up`)".into(),
-        },
+        Err(_) => {
+            let detail = if Path::new(SYSTEM_DAEMON_SOCKET).exists() {
+                format!(
+                    "not running — start with: sudo systemctl start 'nealsd@$USER'"
+                )
+            } else {
+                "not running (will auto-start on `neals up`)".into()
+            };
+            Check {
+                name: "daemon".into(),
+                ok: true,
+                required: true,
+                detail,
+            }
+        }
     }
 }

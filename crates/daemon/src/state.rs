@@ -24,12 +24,16 @@ impl BoundRoute {
         format!("{}.{project}.localhost", self.service)
     }
 
-    pub fn status_label(&self, project: &str) -> String {
+    pub fn status_label(&self, project: &str, proxy_port: u16) -> String {
+        let host = self.public_host(project);
+        let url = if proxy_port == 80 {
+            format!("http://{host}/")
+        } else {
+            format!("http://{host}:{proxy_port}/")
+        };
         match &self.target {
-            BoundTarget::Unix { .. } => self.public_host(project),
-            BoundTarget::Tcp { port } => {
-                format!("{} → 127.0.0.1:{port}", self.public_host(project))
-            }
+            BoundTarget::Unix { .. } => url,
+            BoundTarget::Tcp { port } => format!("{url} → 127.0.0.1:{port}"),
         }
     }
 
@@ -68,6 +72,14 @@ impl Default for AppState {
 
 impl AppState {
     pub fn status(&self) -> Vec<ProjectRuntime> {
+        let proxy_port = {
+            let addr = self.caddy.http_addr();
+            if addr.is_empty() {
+                2015
+            } else {
+                crate::caddy::http_port_from_addr(addr)
+            }
+        };
         self.projects
             .values()
             .map(|p| ProjectRuntime {
@@ -77,7 +89,7 @@ impl AppState {
                 routes: p
                     .bound
                     .iter()
-                    .map(|r| r.status_label(&p.name))
+                    .map(|r| r.status_label(&p.name, proxy_port))
                     .collect(),
             })
             .collect()
