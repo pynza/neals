@@ -1,8 +1,8 @@
 use crate::caddy::{ensure_neals_symlinks, project_runtime_dir};
 use crate::state::{AppState, BoundRoute, BoundTarget, RunningProject};
 use neals_common::{
-    ensure_dir, env_service_key, read_neals_routes, state_dir, Registry, Request, Response,
-    RouteKind,
+    ensure_dir, env_port_var, read_neals_services, state_dir, Registry, Request, Response,
+    ServiceDecl, ServiceKind,
 };
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -57,15 +57,16 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
         project
     };
 
-    let routes = read_neals_routes(&project.path).map_err(|e| e.to_string())?;
+    let services = read_neals_services(&project.path).map_err(|e| e.to_string())?;
 
     let runtime_proj = project_runtime_dir(name).map_err(|e| e.to_string())?;
     ensure_dir(&runtime_proj).map_err(|e| e.to_string())?;
-    ensure_neals_symlinks(&project.path, name, &routes).map_err(|e| e.to_string())?;
+    ensure_neals_symlinks(&project.path, name, &services).map_err(|e| e.to_string())?;
 
+    // Allocate all ports atomically under one lock hold.
     let bound = {
         let mut state = state.lock().await;
-        match bind_routes(&mut state, &routes) {
+        match bind_services(&mut state, &services) {
             Ok(bound) => bound,
             Err(err) => return Err(err),
         }
@@ -73,8 +74,11 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
 
     {
         let mut state = state.lock().await;
-        let mut snapshot = state.route_snapshot();
-        snapshot.push((name.to_string(), bound.clone()));
+        let mut snapshot = state.proxy_snapshot();
+        let proxied: Vec<_> = bound.iter().filter(|r| r.proxy).cloned().collect();
+        if !proxied.is_empty() {
+            snapshot.push((name.to_string(), proxied));
+        }
         if let Err(e) = state.caddy.apply_routes(&snapshot).await {
             release_bound_ports(&mut state, &bound);
             return Err(e.to_string());
@@ -102,12 +106,7 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
 
     for route in &bound {
         if let BoundTarget::Tcp { port } = route.target {
-            let key = env_service_key(&route.service);
-            cmd.env(format!("NEALS_PORT_{key}"), port.to_string());
-            cmd.env(
-                format!("NEALS_LISTEN_{key}"),
-                format!("127.0.0.1:{port}"),
-            );
+            cmd.env(env_port_var(&route.service), port.to_string());
         }
     }
 
@@ -121,7 +120,7 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
         Err(e) => {
             let mut state = state.lock().await;
             release_bound_ports(&mut state, &bound);
-            let snapshot = state.route_snapshot();
+            let snapshot = state.proxy_snapshot();
             let _ = state.caddy.apply_routes(&snapshot).await;
             return Err(format!("failed to spawn `{program}`: {e}"));
         }
@@ -131,7 +130,7 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
         None => {
             let mut state = state.lock().await;
             release_bound_ports(&mut state, &bound);
-            let snapshot = state.route_snapshot();
+            let snapshot = state.proxy_snapshot();
             let _ = state.caddy.apply_routes(&snapshot).await;
             return Err(format!("spawned `{program}` has no pid"));
         }
@@ -141,7 +140,7 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
     if state.is_running(name) {
         stop_spawned(pid, &mut child).await;
         release_bound_ports(&mut state, &bound);
-        let snapshot = state.route_snapshot();
+        let snapshot = state.proxy_snapshot();
         let _ = state.caddy.apply_routes(&snapshot).await;
         return Err(format!("project `{name}` is already running"));
     }
@@ -159,30 +158,49 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
     Ok(())
 }
 
-fn bind_routes(
+fn bind_services(
     state: &mut AppState,
-    routes: &[neals_common::RouteDecl],
+    services: &[ServiceDecl],
 ) -> Result<Vec<BoundRoute>, String> {
-    let mut bound = Vec::with_capacity(routes.len());
-    for decl in routes {
-        let target = match &decl.kind {
-            RouteKind::Unix { socket_file } => BoundTarget::Unix {
-                socket_file: socket_file.clone(),
-            },
-            RouteKind::Tcp => {
-                let port = state
-                    .leases
-                    .allocate()
-                    .map_err(|e| format!("TCP port alloc for `{}`: {e}", decl.service))?;
-                BoundTarget::Tcp { port }
+    let mut bound = Vec::with_capacity(services.len());
+    for decl in services {
+        let result = bind_one(state, decl);
+        match result {
+            Ok(route) => bound.push(route),
+            Err(err) => {
+                release_bound_ports(state, &bound);
+                return Err(err);
             }
-        };
-        bound.push(BoundRoute {
-            service: decl.service.clone(),
-            target,
-        });
+        }
     }
     Ok(bound)
+}
+
+fn bind_one(state: &mut AppState, decl: &ServiceDecl) -> Result<BoundRoute, String> {
+    match &decl.kind {
+        ServiceKind::Unix { socket_file } => Ok(BoundRoute {
+            service: decl.service.clone(),
+            target: BoundTarget::Unix {
+                socket_file: socket_file.clone(),
+            },
+            proxy: true,
+        }),
+        ServiceKind::Tcp {
+            preferred_port,
+            proxy,
+        } => {
+            let port = match preferred_port {
+                Some(start) => state.leases.allocate_preferred(*start),
+                None => state.leases.allocate(),
+            }
+            .map_err(|e| format!("TCP port alloc for `{}`: {e}", decl.service))?;
+            Ok(BoundRoute {
+                service: decl.service.clone(),
+                target: BoundTarget::Tcp { port },
+                proxy: *proxy,
+            })
+        }
+    }
 }
 
 fn release_bound_ports(state: &mut AppState, bound: &[BoundRoute]) {

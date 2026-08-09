@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use crate::state::{BoundRoute, BoundTarget};
-use neals_common::{ensure_dir, runtime_dir, state_dir, RouteDecl, RouteKind};
+use neals_common::{ensure_dir, runtime_dir, state_dir, ServiceDecl, ServiceKind};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -171,6 +171,9 @@ pub fn build_caddy_config(
 
     for (project, decls) in projects {
         for route in decls {
+            if !route.proxy {
+                continue;
+            }
             let host = route.public_host(project);
             let dial = match &route.target {
                 BoundTarget::Unix { socket_file } => {
@@ -314,27 +317,27 @@ pub fn project_runtime_dir(project: &str) -> Result<PathBuf> {
 pub fn ensure_neals_symlinks(
     project_dir: &Path,
     project: &str,
-    routes: &[RouteDecl],
+    services: &[ServiceDecl],
 ) -> Result<()> {
     let runtime_proj = project_runtime_dir(project)?;
     ensure_dir(&runtime_proj)?;
 
-    let unix_routes: Vec<_> = routes
+    let unix_sockets: Vec<_> = services
         .iter()
-        .filter_map(|r| match &r.kind {
-            RouteKind::Unix { socket_file } => Some(socket_file.as_str()),
-            RouteKind::Tcp => None,
+        .filter_map(|s| match &s.kind {
+            ServiceKind::Unix { socket_file } => Some(socket_file.as_str()),
+            ServiceKind::Tcp { .. } => None,
         })
         .collect();
 
-    if unix_routes.is_empty() {
+    if unix_sockets.is_empty() {
         return Ok(());
     }
 
     let neals_dir = project_dir.join(".neals");
     ensure_dir(&neals_dir)?;
 
-    for socket_file in unix_routes {
+    for socket_file in unix_sockets {
         let target = runtime_proj.join(socket_file);
         let link = neals_dir.join(socket_file);
         if link.exists() || link.symlink_metadata().is_ok() {
@@ -377,10 +380,12 @@ mod tests {
                     target: BoundTarget::Unix {
                         socket_file: "backend.sock".into(),
                     },
+                    proxy: true,
                 },
                 BoundRoute {
                     service: "api".into(),
                     target: BoundTarget::Tcp { port: 38471 },
+                    proxy: true,
                 },
             ],
         )];
@@ -406,10 +411,12 @@ mod tests {
                     BoundRoute {
                         service: "be".into(),
                         target: BoundTarget::Tcp { port: 11111 },
+                        proxy: true,
                     },
                     BoundRoute {
                         service: "admin".into(),
                         target: BoundTarget::Tcp { port: 11112 },
+                        proxy: true,
                     },
                 ],
             ),
@@ -418,6 +425,7 @@ mod tests {
                 vec![BoundRoute {
                     service: "be".into(),
                     target: BoundTarget::Tcp { port: 22222 },
+                    proxy: true,
                 }],
             ),
         ];
@@ -431,6 +439,33 @@ mod tests {
         assert!(text.contains("127.0.0.1:22222"));
         assert!(text.contains(r#""be.ferrari.localhost""#));
         assert!(text.contains(r#""be.hugo-boss.localhost""#));
+    }
+
+    #[test]
+    fn build_config_skips_private_tcp_services() {
+        let admin = PathBuf::from("/tmp/neals/caddy-admin.sock");
+        let log = PathBuf::from("/tmp/neals/caddy.log");
+        let projects = [(
+            "demo".into(),
+            vec![
+                BoundRoute {
+                    service: "redis".into(),
+                    target: BoundTarget::Tcp { port: 6379 },
+                    proxy: false,
+                },
+                BoundRoute {
+                    service: "api".into(),
+                    target: BoundTarget::Tcp { port: 8000 },
+                    proxy: true,
+                },
+            ],
+        )];
+        let cfg = build_caddy_config(&admin, "127.0.0.1:2015", &log, &projects);
+        let text = cfg.to_string();
+        assert!(!text.contains("redis.demo.localhost"));
+        assert!(text.contains("api.demo.localhost"));
+        assert!(text.contains("127.0.0.1:8000"));
+        assert!(!text.contains("127.0.0.1:6379"));
     }
 
     #[test]

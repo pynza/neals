@@ -183,7 +183,7 @@ fn header_text(project: &str, meta: &Option<ProjectRuntime>) -> Vec<Line<'static
             ]));
             if m.routes.is_empty() {
                 out.push(Line::from(Span::styled(
-                    "  (no routes declared)",
+                    "  (no services declared)",
                     Style::default().fg(Color::DarkGray),
                 )));
             } else {

@@ -6,8 +6,9 @@ pub mod xdg;
 
 pub use client::call_daemon;
 pub use devenv::{
-    env_service_key, parse_neals_name, parse_neals_routes, read_neals_routes, resolve_project_name,
-    ProjectName, RouteDecl, RouteKind,
+    env_port_var, env_service_key, parse_neals_name, parse_neals_routes, parse_neals_services,
+    read_neals_routes, read_neals_services, resolve_project_name, ProjectName, RouteDecl, RouteKind,
+    ServiceDecl, ServiceKind,
 };
 pub use ipc::{
     decode_request, decode_response, encode_request, encode_response, ProjectRuntime, Request,

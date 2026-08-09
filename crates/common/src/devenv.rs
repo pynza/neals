@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use rnix::ast::{self, Attr, Expr, HasEntry, InterpolPart};
+use rnix::ast::{self, Attr, Expr, HasEntry, InterpolPart, LiteralKind};
 use rnix::Root;
 use std::collections::HashMap;
 use std::fs;
@@ -23,6 +23,41 @@ impl ProjectName {
     }
 }
 
+/// How a declared Neals service is exposed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServiceKind {
+    /// TCP: preferred start port (`None` = ephemeral, legacy `route = "tcp"`).
+    Tcp {
+        preferred_port: Option<u16>,
+        proxy: bool,
+    },
+    Unix { socket_file: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceDecl {
+    pub service: String,
+    pub kind: ServiceKind,
+}
+
+impl ServiceDecl {
+    pub fn public_host(&self, project: &str) -> String {
+        format!("{}.{project}.localhost", self.service)
+    }
+
+    pub fn is_unix(&self) -> bool {
+        matches!(self.kind, ServiceKind::Unix { .. })
+    }
+
+    pub fn wants_proxy(&self) -> bool {
+        match &self.kind {
+            ServiceKind::Tcp { proxy, .. } => *proxy,
+            ServiceKind::Unix { .. } => true,
+        }
+    }
+}
+
+/// Legacy route declaration (kept for older APIs/tests). Prefer [`ServiceDecl`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteKind {
     Unix { socket_file: String },
@@ -53,12 +88,19 @@ pub fn env_service_key(service: &str) -> String {
         .collect()
 }
 
+/// Environment variable for an allocated TCP port: `redis` → `NEALS_REDIS_PORT`.
+pub fn env_port_var(service: &str) -> String {
+    format!("NEALS_{}_PORT", env_service_key(service))
+}
+
 /// Extract literal `neals.name = "..."` from Nix source via rnix AST.
 ///
 /// ponytail: no `nix eval` — only string literals; expressions like `neals.name = lib.foo` are ignored.
 pub fn parse_neals_name(src: &str) -> Option<String> {
-    let bindings = collect_neals_bindings(src).ok()?;
-    let name = bindings.get(&["name".into()][..])?;
+    let bindings = collect_neals_literals(src).ok()?;
+    let NixLit::Str(name) = bindings.get(&["name".into()][..])? else {
+        return None;
+    };
     if is_valid_project_name(name) {
         Some(name.clone())
     } else {
@@ -66,13 +108,74 @@ pub fn parse_neals_name(src: &str) -> Option<String> {
     }
 }
 
-/// Extract `neals.route.<service> = "file.sock" | "tcp"` literal bindings.
-pub fn parse_neals_routes(src: &str) -> Result<Vec<RouteDecl>> {
-    let bindings = collect_neals_bindings(src)?;
-    let mut routes = Vec::new();
-    let mut seen = HashMap::new();
+/// Extract `neals.services` (+ legacy `neals.route`) declarations.
+pub fn parse_neals_services(src: &str) -> Result<Vec<ServiceDecl>> {
+    let bindings = collect_neals_literals(src)?;
+    let mut drafts: HashMap<String, ServiceDraft> = HashMap::new();
 
-    for (path, value) in bindings {
+    for (path, value) in &bindings {
+        if path.len() < 2 || path[0] != "services" {
+            continue;
+        }
+        let service = &path[1];
+        if !is_valid_service_name(service) {
+            bail!("invalid neals.services service name `{service}`");
+        }
+        let draft = drafts.entry(service.clone()).or_default();
+
+        if path.len() == 2 {
+            bail!(
+                "neals.services.{service} must be an attrset \
+                 (e.g. {{ port = 6379; }} or {{ port = 8025; proxy = true; }})"
+            );
+        }
+        if path.len() != 3 {
+            bail!("unsupported neals.services path `{}`", path.join("."));
+        }
+        match path[2].as_str() {
+            "port" => {
+                let port = lit_port(value, &format!("neals.services.{service}.port"))?;
+                if draft.port.is_some() {
+                    bail!("duplicate neals.services.{service}.port");
+                }
+                draft.port = Some(port);
+            }
+            "proxy" => {
+                let proxy = lit_bool(value, &format!("neals.services.{service}.proxy"))?;
+                if draft.proxy.is_some() {
+                    bail!("duplicate neals.services.{service}.proxy");
+                }
+                draft.proxy = Some(proxy);
+            }
+            "socket" => {
+                let sock = lit_str(value, &format!("neals.services.{service}.socket"))?;
+                if !is_valid_socket_file(&sock) {
+                    bail!(
+                        "invalid neals.services.{service}.socket `{sock}` \
+                         (expected a bare filename like backend.sock)"
+                    );
+                }
+                if draft.socket.is_some() {
+                    bail!("duplicate neals.services.{service}.socket");
+                }
+                draft.socket = Some(sock);
+            }
+            other => bail!("unknown neals.services.{service} field `{other}`"),
+        }
+    }
+
+    let mut services = Vec::new();
+    for (service, draft) in drafts {
+        services.push(draft.into_decl(service)?);
+    }
+
+    // Legacy neals.route.* → services (deprecated).
+    let mut seen: HashMap<String, ()> = services
+        .iter()
+        .map(|s| (s.service.clone(), ()))
+        .collect();
+
+    for (path, value) in &bindings {
         if path.len() != 2 || path[0] != "route" {
             continue;
         }
@@ -80,29 +183,53 @@ pub fn parse_neals_routes(src: &str) -> Result<Vec<RouteDecl>> {
         if !is_valid_service_name(service) {
             bail!("invalid neals.route service name `{service}`");
         }
-        let kind = if value == "tcp" {
-            RouteKind::Tcp
-        } else if is_valid_socket_file(&value) {
-            RouteKind::Unix {
-                socket_file: value.clone(),
+        if seen.contains_key(service) {
+            bail!(
+                "neals.route.{service} conflicts with neals.services.{service} \
+                 (use only neals.services)"
+            );
+        }
+        let NixLit::Str(raw) = value else {
+            bail!("neals.route.{service} must be a string literal");
+        };
+        let kind = if raw == "tcp" {
+            ServiceKind::Tcp {
+                preferred_port: None,
+                proxy: true,
+            }
+        } else if is_valid_socket_file(raw) {
+            ServiceKind::Unix {
+                socket_file: raw.clone(),
             }
         } else {
             bail!(
-                "invalid neals.route.{service} value `{value}` \
+                "invalid neals.route.{service} value `{raw}` \
                  (expected \"tcp\" or a bare filename like backend.sock)"
             );
         };
-        if let Some(prev) = seen.insert(service.clone(), value.clone()) {
-            bail!("duplicate neals.route.{service} (`{prev}` and `{value}`)");
-        }
-        routes.push(RouteDecl {
+        seen.insert(service.clone(), ());
+        services.push(ServiceDecl {
             service: service.clone(),
             kind,
         });
     }
 
-    routes.sort_by(|a, b| a.service.cmp(&b.service));
-    Ok(routes)
+    services.sort_by(|a, b| a.service.cmp(&b.service));
+    Ok(services)
+}
+
+/// Extract `neals.route.<service> = "file.sock" | "tcp"` (legacy).
+pub fn parse_neals_routes(src: &str) -> Result<Vec<RouteDecl>> {
+    Ok(parse_neals_services(src)?
+        .into_iter()
+        .map(|s| RouteDecl {
+            service: s.service,
+            kind: match s.kind {
+                ServiceKind::Unix { socket_file } => RouteKind::Unix { socket_file },
+                ServiceKind::Tcp { .. } => RouteKind::Tcp,
+            },
+        })
+        .collect())
 }
 
 pub fn is_valid_project_name(name: &str) -> bool {
@@ -152,18 +279,101 @@ pub fn resolve_project_name(project_dir: &Path) -> Result<ProjectName> {
     Ok(ProjectName::Fallback(fallback))
 }
 
-pub fn read_neals_routes(project_dir: &Path) -> Result<Vec<RouteDecl>> {
+pub fn read_neals_services(project_dir: &Path) -> Result<Vec<ServiceDecl>> {
     let devenv_nix = project_dir.join("devenv.nix");
     if !devenv_nix.is_file() {
         return Ok(Vec::new());
     }
     let content = fs::read_to_string(&devenv_nix)
         .with_context(|| format!("failed to read {}", devenv_nix.display()))?;
-    parse_neals_routes(&content)
+    parse_neals_services(&content)
 }
 
-/// Map relative attr paths under `neals` → literal string values.
-fn collect_neals_bindings(src: &str) -> Result<HashMap<Vec<String>, String>> {
+pub fn read_neals_routes(project_dir: &Path) -> Result<Vec<RouteDecl>> {
+    Ok(read_neals_services(project_dir)?
+        .into_iter()
+        .map(|s| RouteDecl {
+            service: s.service,
+            kind: match s.kind {
+                ServiceKind::Unix { socket_file } => RouteKind::Unix { socket_file },
+                ServiceKind::Tcp { .. } => RouteKind::Tcp,
+            },
+        })
+        .collect())
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum NixLit {
+    Str(String),
+    Int(i64),
+    Bool(bool),
+}
+
+#[derive(Default)]
+struct ServiceDraft {
+    port: Option<u16>,
+    proxy: Option<bool>,
+    socket: Option<String>,
+}
+
+impl ServiceDraft {
+    fn into_decl(self, service: String) -> Result<ServiceDecl> {
+        match (self.port, self.socket) {
+            (Some(port), None) => Ok(ServiceDecl {
+                service,
+                kind: ServiceKind::Tcp {
+                    preferred_port: Some(port),
+                    proxy: self.proxy.unwrap_or(false),
+                },
+            }),
+            (None, Some(socket_file)) => {
+                if self.proxy == Some(false) {
+                    bail!(
+                        "neals.services.{service}.socket cannot set proxy = false \
+                         (UNIX services are always reverse-proxied)"
+                    );
+                }
+                Ok(ServiceDecl {
+                    service,
+                    kind: ServiceKind::Unix { socket_file },
+                })
+            }
+            (Some(_), Some(_)) => bail!(
+                "neals.services.{service} cannot set both port and socket"
+            ),
+            (None, None) => bail!(
+                "neals.services.{service} needs port = <n> or socket = \"file.sock\""
+            ),
+        }
+    }
+}
+
+fn lit_port(value: &NixLit, path: &str) -> Result<u16> {
+    let NixLit::Int(n) = value else {
+        bail!("`{path}` must be an integer literal");
+    };
+    if *n < 1 || *n > 65535 {
+        bail!("`{path}` must be in 1..=65535, got {n}");
+    }
+    Ok(*n as u16)
+}
+
+fn lit_bool(value: &NixLit, path: &str) -> Result<bool> {
+    let NixLit::Bool(b) = value else {
+        bail!("`{path}` must be a boolean literal (true/false)");
+    };
+    Ok(*b)
+}
+
+fn lit_str(value: &NixLit, path: &str) -> Result<String> {
+    let NixLit::Str(s) = value else {
+        bail!("`{path}` must be a string literal");
+    };
+    Ok(s.clone())
+}
+
+/// Map relative attr paths under `neals` → literal values.
+fn collect_neals_literals(src: &str) -> Result<HashMap<Vec<String>, NixLit>> {
     let root = Root::parse(src);
     let Some(expr) = root.tree().expr() else {
         return Ok(HashMap::new());
@@ -199,7 +409,7 @@ fn top_level_attrset(expr: &Expr) -> Option<ast::AttrSet> {
 fn walk_attrset(
     set: &ast::AttrSet,
     prefix: &[String],
-    out: &mut HashMap<Vec<String>, String>,
+    out: &mut HashMap<Vec<String>, NixLit>,
 ) -> Result<()> {
     for apv in set.attrpath_values() {
         let Some(attrpath) = apv.attrpath() else {
@@ -218,24 +428,59 @@ fn walk_attrset(
             Expr::AttrSet(inner) => walk_attrset(&inner, &full, out)?,
             Expr::Str(s) => {
                 if let Some(lit) = literal_string(&s) {
-                    if let Some(prev) = out.insert(full.clone(), lit.clone()) {
-                        bail!(
-                            "duplicate Nix attr `{}` (`{prev}` and `{lit}`)",
-                            full.join(".")
-                        );
-                    }
-                } else if is_neals_route_path(&full) {
+                    insert_lit(out, full, NixLit::Str(lit))?;
+                } else if requires_literal(&full) {
                     bail!(
                         "`{}` must be a string literal (no interpolation)",
                         full.join(".")
                     );
                 }
             }
-            _ if is_neals_route_path(&full) => {
-                bail!("`{}` must be a string literal", full.join("."));
+            Expr::Literal(lit) => match lit.kind() {
+                LiteralKind::Integer(i) => {
+                    let n = i.value().map_err(|e| {
+                        anyhow::anyhow!("invalid integer at `{}`: {e}", full.join("."))
+                    })?;
+                    insert_lit(out, full, NixLit::Int(n))?;
+                }
+                _ if requires_literal(&full) => {
+                    bail!("`{}` must be a supported literal", full.join("."));
+                }
+                _ => {}
+            },
+            Expr::Ident(ident) => {
+                let Some(token) = ident.ident_token() else {
+                    continue;
+                };
+                match token.text() {
+                    "true" => insert_lit(out, full, NixLit::Bool(true))?,
+                    "false" => insert_lit(out, full, NixLit::Bool(false))?,
+                    _ if requires_literal(&full) => {
+                        bail!("`{}` must be a literal", full.join("."));
+                    }
+                    _ => {}
+                }
+            }
+            _ if requires_literal(&full) => {
+                bail!("`{}` must be a literal", full.join("."));
             }
             _ => {}
         }
+    }
+    Ok(())
+}
+
+fn insert_lit(
+    out: &mut HashMap<Vec<String>, NixLit>,
+    full: Vec<String>,
+    lit: NixLit,
+) -> Result<()> {
+    if let Some(prev) = out.insert(full.clone(), lit) {
+        bail!(
+            "duplicate Nix attr `{}` (previous value {:?})",
+            full.join("."),
+            prev
+        );
     }
     Ok(())
 }
@@ -257,8 +502,10 @@ fn attr_path_idents(attrpath: &ast::Attrpath) -> Option<Vec<String>> {
     Some(parts)
 }
 
-fn is_neals_route_path(path: &[String]) -> bool {
-    path.len() >= 3 && path[0] == "neals" && path[1] == "route"
+fn requires_literal(path: &[String]) -> bool {
+    path.len() >= 3
+        && path[0] == "neals"
+        && (path[1] == "route" || path[1] == "services" || path[1] == "name")
 }
 
 fn literal_string(s: &ast::Str) -> Option<String> {
@@ -288,7 +535,6 @@ mod tests {
 
     #[test]
     fn parse_double_quoted_name_only() {
-        // Nix strings are "..." or ''...''; single-quoted '...' is not a string.
         assert_eq!(
             parse_neals_name(r#"{ neals.name = "my-app"; }"#).as_deref(),
             Some("my-app")
@@ -310,7 +556,6 @@ mod tests {
     #[test]
     fn parse_name_hash_inside_string() {
         let src = r#"neals.name = "ok#name";"#;
-        // invalid project name due to `#`
         assert_eq!(parse_neals_name(src), None);
     }
 
@@ -389,6 +634,92 @@ mod tests {
         assert_eq!(env_service_key("api"), "API");
         assert_eq!(env_service_key("api-backend"), "API_BACKEND");
         assert_eq!(env_service_key("web2"), "WEB2");
+    }
+
+    #[test]
+    fn env_port_var_format() {
+        assert_eq!(env_port_var("redis"), "NEALS_REDIS_PORT");
+        assert_eq!(env_port_var("redis-insight"), "NEALS_REDIS_INSIGHT_PORT");
+    }
+
+    #[test]
+    fn parse_services_preferred_and_proxy() {
+        let src = r#"
+          {
+            neals.services.redis.port = 6379;
+            neals.services.mailpit = { port = 8025; proxy = true; };
+            neals.services.backend.socket = "backend.sock";
+          }
+        "#;
+        let services = parse_neals_services(src).unwrap();
+        assert_eq!(services.len(), 3);
+        assert_eq!(
+            services.iter().find(|s| s.service == "redis").unwrap().kind,
+            ServiceKind::Tcp {
+                preferred_port: Some(6379),
+                proxy: false,
+            }
+        );
+        assert_eq!(
+            services
+                .iter()
+                .find(|s| s.service == "mailpit")
+                .unwrap()
+                .kind,
+            ServiceKind::Tcp {
+                preferred_port: Some(8025),
+                proxy: true,
+            }
+        );
+        assert_eq!(
+            services
+                .iter()
+                .find(|s| s.service == "backend")
+                .unwrap()
+                .kind,
+            ServiceKind::Unix {
+                socket_file: "backend.sock".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_services_merges_legacy_route() {
+        let src = r#"
+          {
+            neals.services.redis.port = 6379;
+            neals.route.api = "tcp";
+          }
+        "#;
+        let services = parse_neals_services(src).unwrap();
+        assert_eq!(services.len(), 2);
+        let api = services.iter().find(|s| s.service == "api").unwrap();
+        assert_eq!(
+            api.kind,
+            ServiceKind::Tcp {
+                preferred_port: None,
+                proxy: true,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_services_conflict_with_route() {
+        let src = r#"
+          {
+            neals.services.api.port = 8000;
+            neals.route.api = "tcp";
+          }
+        "#;
+        assert!(parse_neals_services(src).is_err());
+    }
+
+    #[test]
+    fn parse_services_rejects_port_and_socket() {
+        let src = r#"{
+          neals.services.x = { port = 1; socket = "x.sock"; };
+        }"#;
+        assert!(parse_neals_services(src).is_err());
     }
 
     #[test]

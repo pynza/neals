@@ -390,3 +390,352 @@ async fn multi_project_tcp_routes_have_distinct_hosts_and_ports() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn preferred_ports_private_and_proxy_status() {
+    let env = TestEnv::setup();
+    fs::write(
+        env.root.join("demo-project").join("devenv.nix"),
+        r#"{
+          neals.name = "demo";
+          neals.services.redis.port = 45901;
+          neals.services.api = { port = 45911; proxy = true; };
+        }"#,
+    )
+    .unwrap();
+
+    let state = Arc::new(Mutex::new(AppState::default()));
+    assert_eq!(
+        roundtrip(
+            &state,
+            Request::Up {
+                project: "demo".into()
+            }
+        )
+        .await,
+        Response::Ok
+    );
+
+    match roundtrip(&state, Request::Status).await {
+        Response::Status { projects } => {
+            let demo = &projects[0];
+            assert!(
+                demo.routes.iter().any(|r| r == "redis → 127.0.0.1:45901"),
+                "private redis label missing: {:?}",
+                demo.routes
+            );
+            assert!(
+                demo.routes.iter().any(|r| {
+                    r.starts_with("http://api.demo.localhost:2015/ → 127.0.0.1:45911")
+                }),
+                "proxied api label missing: {:?}",
+                demo.routes
+            );
+        }
+        other => panic!("expected Status, got {other:?}"),
+    }
+
+    let _ = roundtrip(
+        &state,
+        Request::Down {
+            project: "demo".into()
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn two_projects_same_preferred_get_distinct_ports() {
+    let env = TestEnv::setup();
+    let nix = r#"{
+      neals.name = "NAME";
+      neals.services.redis.port = 46101;
+    }"#;
+    fs::write(
+        env.root.join("demo-project").join("devenv.nix"),
+        nix.replace("NAME", "demo"),
+    )
+    .unwrap();
+    env.add_project("other", &nix.replace("NAME", "other"));
+
+    let state = Arc::new(Mutex::new(AppState::default()));
+    assert_eq!(
+        roundtrip(
+            &state,
+            Request::Up {
+                project: "demo".into()
+            }
+        )
+        .await,
+        Response::Ok
+    );
+    assert_eq!(
+        roundtrip(
+            &state,
+            Request::Up {
+                project: "other".into()
+            }
+        )
+        .await,
+        Response::Ok
+    );
+
+    match roundtrip(&state, Request::Status).await {
+        Response::Status { projects } => {
+            let port = |name: &str| -> u16 {
+                let p = projects.iter().find(|p| p.name == name).unwrap();
+                let label = p
+                    .routes
+                    .iter()
+                    .find(|r| r.starts_with("redis → 127.0.0.1:"))
+                    .unwrap();
+                label.rsplit(':').next().unwrap().parse().unwrap()
+            };
+            let a = port("demo");
+            let b = port("other");
+            assert_ne!(a, b);
+            assert!(a >= 46101);
+            assert!(b >= 46101);
+            assert!([a, b].contains(&46101));
+        }
+        other => panic!("expected Status, got {other:?}"),
+    }
+
+    let _ = roundtrip(
+        &state,
+        Request::Down {
+            project: "demo".into()
+        },
+    )
+    .await;
+    let _ = roundtrip(
+        &state,
+        Request::Down {
+            project: "other".into()
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn concurrent_up_same_preferred_no_collision() {
+    let env = TestEnv::setup();
+    let nix = r#"{
+      neals.name = "NAME";
+      neals.services.redis.port = 46301;
+    }"#;
+    fs::write(
+        env.root.join("demo-project").join("devenv.nix"),
+        nix.replace("NAME", "demo"),
+    )
+    .unwrap();
+    env.add_project("other", &nix.replace("NAME", "other"));
+
+    let state = Arc::new(Mutex::new(AppState::default()));
+    let s1 = Arc::clone(&state);
+    let s2 = Arc::clone(&state);
+    let (r1, r2) = tokio::join!(
+        handle_request(
+            Request::Up {
+                project: "demo".into()
+            },
+            &s1
+        ),
+        handle_request(
+            Request::Up {
+                project: "other".into()
+            },
+            &s2
+        ),
+    );
+    assert_eq!(r1, Response::Ok);
+    assert_eq!(r2, Response::Ok);
+
+    match roundtrip(&state, Request::Status).await {
+        Response::Status { projects } => {
+            assert_eq!(projects.len(), 2);
+            let ports: Vec<u16> = projects
+                .iter()
+                .map(|p| {
+                    let label = p
+                        .routes
+                        .iter()
+                        .find(|r| r.starts_with("redis → 127.0.0.1:"))
+                        .unwrap();
+                    label.rsplit(':').next().unwrap().parse().unwrap()
+                })
+                .collect();
+            assert_ne!(ports[0], ports[1]);
+        }
+        other => panic!("expected Status, got {other:?}"),
+    }
+
+    let _ = roundtrip(
+        &state,
+        Request::Down {
+            project: "demo".into()
+        },
+    )
+    .await;
+    let _ = roundtrip(
+        &state,
+        Request::Down {
+            project: "other".into()
+        },
+    )
+    .await;
+}
+
+/// Acceptance-style: fixtures under tests/projects bind `$NEALS_REDIS_PORT`.
+#[tokio::test]
+async fn redis_project_fixtures_bind_allocated_ports() {
+    let env = TestEnv::setup();
+    let binder = env.root.join("bind_redis.py");
+    fs::write(
+        &binder,
+        r#"#!/usr/bin/env python3
+import os, socket, time
+port = int(os.environ["NEALS_REDIS_PORT"])
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", port))
+s.listen(1)
+open(os.environ["NEALS_BIND_READY"], "w").write(str(port))
+time.sleep(3600)
+"#,
+    )
+    .unwrap();
+
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/projects");
+    for (name, dir) in [
+        ("redis-project-1", "redis-project-1"),
+        ("redis-project-2", "redis-project-2"),
+    ] {
+        let src = fixture.join(dir);
+        let dst = env.root.join(format!("{name}-project"));
+        fs::create_dir_all(&dst).unwrap();
+        fs::copy(src.join("devenv.nix"), dst.join("devenv.nix")).unwrap();
+        let mut registry = Registry::load().unwrap();
+        let _ = registry.remove(name); // ok if missing
+        registry
+            .add(Project {
+                name: name.into(),
+                path: dst,
+            })
+            .unwrap();
+        registry.save().unwrap();
+    }
+
+    let ready1 = env.root.join("ready1");
+    let ready2 = env.root.join("ready2");
+    let wrap1 = env.root.join("up1.sh");
+    let wrap2 = env.root.join("up2.sh");
+    fs::write(
+        &wrap1,
+        format!(
+            "#!/bin/sh\nexport NEALS_BIND_READY='{}'\nexec python3 '{}'\n",
+            ready1.display(),
+            binder.display()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        &wrap2,
+        format!(
+            "#!/bin/sh\nexport NEALS_BIND_READY='{}'\nexec python3 '{}'\n",
+            ready2.display(),
+            binder.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&wrap1, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(&wrap2, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let state = Arc::new(Mutex::new(AppState::default()));
+    std::env::set_var("NEALS_UP_CMD", wrap1.to_str().unwrap());
+    assert_eq!(
+        roundtrip(
+            &state,
+            Request::Up {
+                project: "redis-project-1".into()
+            }
+        )
+        .await,
+        Response::Ok
+    );
+    std::env::set_var("NEALS_UP_CMD", wrap2.to_str().unwrap());
+    assert_eq!(
+        roundtrip(
+            &state,
+            Request::Up {
+                project: "redis-project-2".into()
+            }
+        )
+        .await,
+        Response::Ok
+    );
+
+    let mut port1 = None;
+    let mut port2 = None;
+    for _ in 0..100 {
+        if ready1.is_file() {
+            port1 = Some(fs::read_to_string(&ready1).unwrap().trim().parse::<u16>().unwrap());
+        }
+        if ready2.is_file() {
+            port2 = Some(fs::read_to_string(&ready2).unwrap().trim().parse::<u16>().unwrap());
+        }
+        if port1.is_some() && port2.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let port1 = port1.expect("redis-project-1 bound");
+    let port2 = port2.expect("redis-project-2 bound");
+    assert_ne!(port1, port2);
+    assert!(port1 >= 6379);
+    assert!(port2 >= 6379);
+
+    match roundtrip(&state, Request::Status).await {
+        Response::Status { projects } => {
+            let label_port = |name: &str| -> u16 {
+                let p = projects.iter().find(|p| p.name == name).unwrap();
+                p.routes
+                    .iter()
+                    .find(|r| r.starts_with("redis → 127.0.0.1:"))
+                    .unwrap()
+                    .rsplit(':')
+                    .next()
+                    .unwrap()
+                    .parse()
+                    .unwrap()
+            };
+            assert_eq!(label_port("redis-project-1"), port1);
+            assert_eq!(label_port("redis-project-2"), port2);
+        }
+        other => panic!("expected Status, got {other:?}"),
+    }
+
+    // Both listeners must accept connections.
+    for port in [port1, port2] {
+        let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap_or_else(|e| panic!("connect {port}: {e}"));
+        drop(stream);
+    }
+
+    let _ = roundtrip(
+        &state,
+        Request::Down {
+            project: "redis-project-1".into()
+        },
+    )
+    .await;
+    let _ = roundtrip(
+        &state,
+        Request::Down {
+            project: "redis-project-2".into()
+        },
+    )
+    .await;
+}

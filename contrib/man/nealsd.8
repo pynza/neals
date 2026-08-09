@@ -11,13 +11,20 @@ It accepts JSON-line requests over a UNIX socket, runs
 .B devenv up
 /
 .B down
-for registered projects, leases loopback TCP ports for
-.B neals.route.*=tcp
-services, manages
+for registered projects, globally allocates loopback TCP ports for
+.B neals.services.*.port
+(preferred start port; next free port if busy), injects
+.BI NEALS_ SERVICE _PORT
+into the project environment, manages
 .B .neals
-symlinks for UNIX routes, and runs a dedicated Caddy instance that reverse-proxies
-.BI {service}.{project}.localhost
-to those backends.
+symlinks for UNIX services, and runs a dedicated Caddy instance that reverse-proxies
+services with
+.B proxy = true
+at
+.BI {service}.{project}.localhost .
+Legacy
+.B neals.route.*
+declarations are still accepted.
 .PP
 Prefer starting it via systemd:
 .B nealsd@\fIUSER\fR.service

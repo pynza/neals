@@ -17,6 +17,8 @@ pub enum BoundTarget {
 pub struct BoundRoute {
     pub service: String,
     pub target: BoundTarget,
+    /// When true, Neals reverse-proxies via Caddy (`{service}.{project}.localhost`).
+    pub proxy: bool,
 }
 
 impl BoundRoute {
@@ -25,15 +27,27 @@ impl BoundRoute {
     }
 
     pub fn status_label(&self, project: &str, proxy_port: u16) -> String {
-        let host = self.public_host(project);
-        let url = if proxy_port == 80 {
-            format!("http://{host}/")
-        } else {
-            format!("http://{host}:{proxy_port}/")
-        };
         match &self.target {
-            BoundTarget::Unix { .. } => url,
-            BoundTarget::Tcp { port } => format!("{url} → 127.0.0.1:{port}"),
+            BoundTarget::Unix { .. } => {
+                let host = self.public_host(project);
+                if proxy_port == 80 {
+                    format!("http://{host}/")
+                } else {
+                    format!("http://{host}:{proxy_port}/")
+                }
+            }
+            BoundTarget::Tcp { port } if self.proxy => {
+                let host = self.public_host(project);
+                let url = if proxy_port == 80 {
+                    format!("http://{host}/")
+                } else {
+                    format!("http://{host}:{proxy_port}/")
+                };
+                format!("{url} → 127.0.0.1:{port}")
+            }
+            BoundTarget::Tcp { port } => {
+                format!("{} → 127.0.0.1:{port}", self.service)
+            }
         }
     }
 
@@ -99,10 +113,26 @@ impl AppState {
         self.projects.contains_key(name)
     }
 
-    pub fn route_snapshot(&self) -> Vec<(String, Vec<BoundRoute>)> {
+    /// All bound services (including private TCP without Caddy).
+    pub fn bound_snapshot(&self) -> Vec<(String, Vec<BoundRoute>)> {
         self.projects
             .values()
             .map(|p| (p.name.clone(), p.bound.clone()))
+            .collect()
+    }
+
+    /// Only services that should appear in Caddy (proxy / UNIX).
+    pub fn proxy_snapshot(&self) -> Vec<(String, Vec<BoundRoute>)> {
+        self.projects
+            .values()
+            .filter_map(|p| {
+                let proxied: Vec<_> = p.bound.iter().filter(|r| r.proxy).cloned().collect();
+                if proxied.is_empty() {
+                    None
+                } else {
+                    Some((p.name.clone(), proxied))
+                }
+            })
             .collect()
     }
 
@@ -114,7 +144,7 @@ impl AppState {
             }
         }
         let _ = crate::caddy::cleanup_neals_dir(&running.project_path);
-        let snapshot = self.route_snapshot();
+        let snapshot = self.proxy_snapshot();
         if let Err(err) = self.caddy.apply_routes(&snapshot).await {
             eprintln!("caddy apply after cleanup `{}`: {err:#}", running.name);
         }

@@ -138,7 +138,7 @@ as `neals up` (routes header + scrolling logs).")]
     /// Open an interactive shell in the project's devenv
     #[command(name = "bash", long_about = "\
 Enters a quiet `devenv shell` using $SHELL. bash/zsh get a short prompt
-`neals:<project>`; use `neals status` for routes.")]
+`neals:<project>`; use `neals status` for services.")]
     Bash {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
@@ -442,7 +442,7 @@ pub(crate) fn cmd_status() -> Result<()> {
                 style::header_cell("Name"),
                 style::header_cell("PID"),
                 style::header_cell("Uptime"),
-                style::header_cell("Routes"),
+                style::header_cell("Services"),
             ]);
             for project in projects {
                 let routes = if project.routes.is_empty() {

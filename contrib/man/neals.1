@@ -127,13 +127,19 @@ Used internally for dynamic shell completion
 .PP
 On
 .BR up ,
-TCP routes also inject
-.BI NEALS_PORT_ SERVICE
-and
-.BI NEALS_LISTEN_ SERVICE
-(and
-.B NEALS_RUNTIME
-for UNIX sockets). See the project README.
+each
+.B neals.services.\fIsvc\fR.port
+allocation injects
+.BI NEALS_ SERVICE _PORT
+(e.g.
+.BR NEALS_REDIS_PORT )
+before processes start.
+UNIX services also get
+.BR NEALS_RUNTIME .
+Legacy
+.B neals.route.*=tcp
+still works (ephemeral port + proxy) but is deprecated.
+See the project README.
 .SH EXAMPLES
 .nf
 neals register
