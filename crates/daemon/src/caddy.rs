@@ -406,7 +406,7 @@ mod tests {
         let log = PathBuf::from("/tmp/neals/caddy.log");
         let projects = [
             (
-                "ferrari".into(),
+                "demo".into(),
                 vec![
                     BoundRoute {
                         service: "be".into(),
@@ -421,7 +421,7 @@ mod tests {
                 ],
             ),
             (
-                "hugo-boss".into(),
+                "demo2".into(),
                 vec![BoundRoute {
                     service: "be".into(),
                     target: BoundTarget::Tcp { port: 22222 },
@@ -431,14 +431,14 @@ mod tests {
         ];
         let cfg = build_caddy_config(&admin, "127.0.0.1:2015", &log, &projects);
         let text = cfg.to_string();
-        assert!(text.contains("be.ferrari.localhost"));
-        assert!(text.contains("admin.ferrari.localhost"));
-        assert!(text.contains("be.hugo-boss.localhost"));
+        assert!(text.contains("be.demo.localhost"));
+        assert!(text.contains("admin.demo.localhost"));
+        assert!(text.contains("be.demo2.localhost"));
         assert!(text.contains("127.0.0.1:11111"));
         assert!(text.contains("127.0.0.1:11112"));
         assert!(text.contains("127.0.0.1:22222"));
-        assert!(text.contains(r#""be.ferrari.localhost""#));
-        assert!(text.contains(r#""be.hugo-boss.localhost""#));
+        assert!(text.contains(r#""be.demo.localhost""#));
+        assert!(text.contains(r#""be.demo2.localhost""#));
     }
 
     #[test]

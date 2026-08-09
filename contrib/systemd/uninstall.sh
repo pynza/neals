@@ -2,6 +2,10 @@
 # Remove the system daemon unit and (by default) installed binaries.
 # Does not delete user data under ~/.config/neals or ~/.local/state/neals
 # unless --purge is passed (as that user, or with USER_NAME=).
+#
+# Matches install.sh defaults (PREFIX=/usr/local). After a .deb install use
+#   sudo dpkg -r neals
+# or: PREFIX=/usr sudo ./uninstall.sh "$USER"
 set -euo pipefail
 
 PREFIX="${PREFIX:-/usr/local}"
@@ -66,8 +70,23 @@ rm -rf "$PREFIX/share/doc/neals"
 systemctl daemon-reload
 systemctl reset-failed "$unit" 2>/dev/null || true
 
+user_home="$(getent passwd "$USER_NAME" | cut -d: -f6)"
+# Drop the block install.sh may have added to the login shell rc.
+if [[ -n "$user_home" ]]; then
+  COMPLETION_BEGIN="# >>> neals completions >>>"
+  COMPLETION_END="# <<< neals completions <<<"
+  for rc in "$user_home/.bashrc" "$user_home/.zshrc" "$user_home/.config/fish/config.fish"; do
+    [[ -f "$rc" ]] || continue
+    if grep -qF "$COMPLETION_BEGIN" "$rc" 2>/dev/null; then
+      # Delete from begin marker through end marker (inclusive).
+      sed -i "\|^${COMPLETION_BEGIN}$|,\|^${COMPLETION_END}$|d" "$rc"
+      # Drop a leftover blank line left above the block, if any.
+      echo "removed shell completion block from $rc"
+    fi
+  done
+fi
+
 if [[ "$PURGE" -eq 1 ]]; then
-  user_home="$(getent passwd "$USER_NAME" | cut -d: -f6)"
   if [[ -n "$user_home" && -d "$user_home" ]]; then
     rm -rf "$user_home/.config/neals" "$user_home/.local/state/neals"
     echo "purged $user_home/.config/neals and $user_home/.local/state/neals"

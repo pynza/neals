@@ -1,6 +1,6 @@
 # System daemon (portless URLs)
 
-Goal: open `http://admin.ferrari.localhost/` with **no port** in the URL, without
+Goal: open `http://admin.demo.localhost/` with **no port** in the URL, without
 lowering privileged ports for every process on the machine.
 
 ## Model
@@ -23,9 +23,27 @@ capability.
 
 ## Quick install
 
+From a **git checkout**:
+
 ```bash
 cargo build --release -p neals -p nealsd
 sudo ./contrib/systemd/install.sh "$USER"
+```
+
+From a **GitHub Release** archive (`.tar.gz` / `.zip`):
+
+```bash
+tar xf neals-v*-x86_64-unknown-linux-gnu.tar.gz   # or aarch64…
+cd neals-v*-*
+sudo ./systemd/install.sh "$USER"
+```
+
+(`install.sh` / `uninstall.sh` attached alone on the Release page are the same
+scripts — they need the archive layout: binaries + `man/` + unit next to them.)
+
+Then:
+
+```bash
 neals doctor
 neals up my-app -d
 # → http://backend.my-app.localhost/
@@ -37,6 +55,15 @@ neals up my-app -d
 2. Installs man pages (`man neals`, `man nealsd`) and this doc under `share/doc/neals/`
 3. Installs `nealsd@.service` under `/etc/systemd/system/`
 4. `systemctl enable --now nealsd@$USER`
+5. Asks **[y/N]** to enable shell completion in the user’s login shell rc
+   (bash/zsh/fish). Non-interactive: `NEALS_INSTALL_COMPLETIONS=y sudo ./…`
+
+Manual completion setup (any install method):
+
+```bash
+# print the one-liner for your shell, then add it to ~/.bashrc / ~/.zshrc / …
+neals completions bash
+```
 
 ## Uninstall
 
@@ -64,10 +91,10 @@ sudo systemctl enable --now "nealsd@$USER"
 ## Day-to-day UX
 
 ```bash
-neals up ferrari          # prints http://admin.ferrari.localhost/ …
-# browser: http://admin.ferrari.localhost/
+neals up demo          # prints http://admin.demo.localhost/ …
+# browser: http://admin.demo.localhost/
 neals status
-neals down ferrari
+neals down demo
 ```
 
 No sudo for daily use. If the daemon is down:

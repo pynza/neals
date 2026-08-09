@@ -113,7 +113,7 @@ Or use the interactive loop: `neals repl`.
 | `neals exec <name> -- …` | One-shot command in devenv |
 | `neals doctor` | Check tools, dirs, bind, daemon |
 | `neals repl` | Interactive command loop |
-| `neals completions <shell>` | Print completion snippet |
+| `neals completions <shell>` | Print completion snippet (also offered by `install.sh` as y/N) |
 
 Global: `-y` / `--yes` skips confirmations. `neals --help` for full text.
 
@@ -194,4 +194,36 @@ nix develop
 cargo test
 cargo build -p neals -p nealsd
 cargo run -p neals -- --help
+```
+
+## Releases
+
+Pushing an annotated tag `v*` runs [.github/workflows/release.yml](.github/workflows/release.yml):
+builds **Linux amd64 + arm64** packages and publishes a GitHub Release.
+Nothing is pushed to apt/crates.io/Homebrew — only GitHub Release files.
+
+| Asset | Contents |
+|-------|----------|
+| `neals-v*-x86_64-unknown-linux-gnu.tar.gz` / `.zip` | bins + man + `systemd/install.sh` |
+| `neals-v*-aarch64-unknown-linux-gnu.tar.gz` / `.zip` | same for arm64 |
+| `neals_*_amd64.deb` / `neals_*_arm64.deb` | system package under `/usr` |
+| `install.sh` / `uninstall.sh` | same helpers (use from an extracted archive) |
+| `SHA256SUMS` | checksums |
+
+```bash
+# From a release archive (portless :80 daemon):
+tar xf neals-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+cd neals-v0.1.0-x86_64-unknown-linux-gnu
+sudo ./systemd/install.sh "$USER"
+```
+
+```bash
+git tag -a v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
+```
+
+Local package smoke test (host arch → `./dist`):
+
+```bash
+./contrib/packaging/package-linux.sh 0.1.0
 ```
