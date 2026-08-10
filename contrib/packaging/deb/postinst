@@ -1,0 +1,138 @@
+#!/bin/bash
+# Maintainer script after package install (dpkg postinst / rpm %post).
+# Enables nealsd@$SUDO_USER (portless :80) and shell completion.
+# Skip with NEALS_DEB_SETUP=0 or NEALS_PKG_SETUP=0.
+set -e
+
+COMPLETION_BEGIN="# >>> neals completions >>>"
+COMPLETION_END="# <<< neals completions <<<"
+STATE_DIR="/var/lib/neals"
+STATE_USER="$STATE_DIR/deb-user"
+
+ask_yes_no() {
+  local prompt="$1" reply
+  case "${NEALS_PKG_SETUP:-${NEALS_DEB_SETUP:-}}" in
+    0|n|N|no|NO) return 1 ;;
+    1|y|Y|yes|YES) return 0 ;;
+  esac
+  if [[ "${DEBIAN_FRONTEND:-}" == "noninteractive" ]]; then
+    return 0
+  fi
+  if [[ -r /dev/tty ]]; then
+    read -r -p "$prompt" reply </dev/tty || reply=y
+  elif [[ -t 0 ]]; then
+    read -r -p "$prompt" reply || reply=y
+  else
+    return 0
+  fi
+  case "$reply" in
+    ""|y|Y|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+setup_user_completion() {
+  local user="$1" home shell_name rc snippet
+  home="$(getent passwd "$user" | cut -d: -f6)"
+  shell_name="$(basename "$(getent passwd "$user" | cut -d: -f7)")"
+  case "$shell_name" in
+    bash)
+      # System file /usr/share/bash-completion/completions/neals covers bash.
+      return 0
+      ;;
+    zsh)
+      rc="$home/.zshrc"
+      snippet='source <(COMPLETE=zsh neals)'
+      ;;
+    fish)
+      rc="$home/.config/fish/config.fish"
+      snippet='COMPLETE=fish neals | source'
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+  if [[ -f "$rc" ]] && grep -qF "$COMPLETION_BEGIN" "$rc" 2>/dev/null; then
+    return 0
+  fi
+  if [[ "$shell_name" == "fish" ]]; then
+    install -d -o "$user" -g "$(id -gn "$user")" "$(dirname "$rc")"
+  fi
+  if [[ ! -e "$rc" ]]; then
+    touch "$rc"
+    chown "$user:$(id -gn "$user")" "$rc"
+    chmod 644 "$rc"
+  fi
+  {
+    echo ""
+    echo "$COMPLETION_BEGIN"
+    echo "$snippet"
+    echo "$COMPLETION_END"
+  } >>"$rc"
+  chown "$user:$(id -gn "$user")" "$rc"
+  echo "neals: shell completion added to $rc"
+}
+
+enable_daemon() {
+  local user="$1" home nix_bin drop_in
+  if ! command -v systemctl >/dev/null 2>&1; then
+    echo "neals: systemctl not found; skip daemon enable" >&2
+    return 0
+  fi
+  if [[ ! -d /run/systemd/system ]]; then
+    echo "neals: systemd not active; skip daemon enable" >&2
+    return 0
+  fi
+
+  systemctl daemon-reload || true
+
+  home="$(getent passwd "$user" | cut -d: -f6)"
+  nix_bin="$home/.nix-profile/bin"
+  drop_in="/etc/systemd/system/nealsd@${user}.service.d"
+  if [[ -x "$nix_bin/caddy" || -d "$nix_bin" ]]; then
+    install -d "$drop_in"
+    cat >"$drop_in/path.conf" <<EOF
+[Service]
+Environment=PATH=${nix_bin}:/usr/local/bin:/usr/bin:/bin
+EOF
+  fi
+
+  systemctl enable --now "nealsd@${user}.service"
+  mkdir -p "$STATE_DIR"
+  echo "$user" >"$STATE_USER"
+  echo "neals: enabled nealsd@${user} (http://{service}.{project}.localhost/ on :80)"
+}
+
+# deb: configure | rpm %post: 1=install, 2=upgrade
+case "$1" in
+configure|1|2)
+  if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+    systemctl daemon-reload || true
+  fi
+
+  USER_NAME="${SUDO_USER:-}"
+  if [[ -z "$USER_NAME" || "$USER_NAME" == "root" ]]; then
+    echo "neals: installed. Enable the portless daemon with:"
+    echo "  sudo systemctl enable --now \"nealsd@\$USER\""
+    echo "neals: bash completion: /usr/share/bash-completion/completions/neals"
+    exit 0
+  fi
+
+  if ! id "$USER_NAME" >/dev/null 2>&1; then
+    exit 0
+  fi
+
+  echo "neals: configuring for user ${USER_NAME}"
+  if ask_yes_no "Enable nealsd@${USER_NAME} (portless *.localhost on :80) and shell completion? [Y/n] "; then
+    enable_daemon "$USER_NAME"
+    setup_user_completion "$USER_NAME"
+    echo "neals: try: neals doctor"
+  else
+    echo "neals: skipped. Later:"
+    echo "  sudo systemctl enable --now \"nealsd@${USER_NAME}\""
+    echo "  neals completions zsh   # if needed"
+  fi
+  ;;
+esac
+
+exit 0

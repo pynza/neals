@@ -1,0 +1,23 @@
+#!/bin/bash
+# Stop/disable the instance enabled by postinst (dpkg prerm / rpm %preun).
+set -e
+
+STATE_USER="/var/lib/neals/deb-user"
+
+# deb: remove|upgrade|deconfigure | rpm %preun: 0=uninstall, >=1=upgrade
+case "$1" in
+remove|upgrade|deconfigure|0|1)
+  if [[ -f "$STATE_USER" ]]; then
+    user="$(cat "$STATE_USER")"
+    if [[ -n "$user" ]] && command -v systemctl >/dev/null 2>&1; then
+      systemctl disable --now "nealsd@${user}.service" 2>/dev/null || true
+      rm -rf "/etc/systemd/system/nealsd@${user}.service.d"
+    fi
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload 2>/dev/null || true
+  fi
+  ;;
+esac
+
+exit 0

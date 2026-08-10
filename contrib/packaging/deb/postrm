@@ -1,0 +1,54 @@
+#!/bin/bash
+# Cleanup after remove/purge (dpkg postrm / rpm %postun).
+set -e
+
+COMPLETION_BEGIN="# >>> neals completions >>>"
+COMPLETION_END="# <<< neals completions <<<"
+STATE_DIR="/var/lib/neals"
+STATE_USER="$STATE_DIR/deb-user"
+
+cleanup_user_state() {
+  if [[ ! -f "$STATE_USER" ]]; then
+    return 0
+  fi
+  user="$(cat "$STATE_USER")"
+  if [[ -z "$user" ]]; then
+    return 0
+  fi
+  home="$(getent passwd "$user" | cut -d: -f6 || true)"
+  if [[ -n "$home" ]]; then
+    for rc in "$home/.zshrc" "$home/.config/fish/config.fish"; do
+      [[ -f "$rc" ]] || continue
+      if grep -qF "$COMPLETION_BEGIN" "$rc" 2>/dev/null; then
+        sed -i "\|^${COMPLETION_BEGIN}$|,\|^${COMPLETION_END}$|d" "$rc" || true
+      fi
+    done
+  fi
+  rm -rf "/etc/systemd/system/nealsd@${user}.service.d"
+}
+
+# deb purge | rpm %postun with $1=0 (last package removed)
+case "$1" in
+purge)
+  cleanup_user_state
+  rm -rf "$STATE_DIR"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload 2>/dev/null || true
+  fi
+  ;;
+remove)
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload 2>/dev/null || true
+  fi
+  ;;
+0)
+  # rpm uninstall (not upgrade)
+  cleanup_user_state
+  rm -rf "$STATE_DIR"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload 2>/dev/null || true
+  fi
+  ;;
+esac
+
+exit 0

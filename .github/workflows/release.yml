@@ -4,7 +4,7 @@
 #   git push origin v0.1.0
 #
 # Assets (not published to apt/crates.io/etc.):
-#   *.tar.gz  *.zip  *.deb  install.sh  uninstall.sh  SHA256SUMS
+#   *.tar.gz  *.zip  *.deb  *.rpm  SHA256SUMS
 #
 name: release
 
@@ -37,8 +37,8 @@ jobs:
       - name: Package
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq zip dpkg
-          chmod +x contrib/packaging/package-linux.sh contrib/systemd/*.sh
+          sudo apt-get install -y -qq zip dpkg curl
+          chmod +x contrib/packaging/package-linux.sh
           CLEAR_DIST=1 ./contrib/packaging/package-linux.sh \
             "${GITHUB_REF_NAME#v}" "${{ matrix.target }}"
 
@@ -68,11 +68,8 @@ jobs:
       - name: Merge artifacts
         run: |
           mkdir -p dist
-          cp dist-amd64/*.tar.gz dist-amd64/*.zip dist-amd64/*.deb dist/
-          cp dist-arm64/*.tar.gz dist-arm64/*.zip dist-arm64/*.deb dist/
-          # Same scripts on both builds; take amd64 copy.
-          cp dist-amd64/install.sh dist-amd64/uninstall.sh dist/
-          chmod 755 dist/install.sh dist/uninstall.sh
+          cp dist-amd64/*.tar.gz dist-amd64/*.zip dist-amd64/*.deb dist-amd64/*.rpm dist/
+          cp dist-arm64/*.tar.gz dist-arm64/*.zip dist-arm64/*.deb dist-arm64/*.rpm dist/
           (
             cd dist
             sha256sum ./* >SHA256SUMS
@@ -88,6 +85,5 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             dist/*.deb
-            dist/install.sh
-            dist/uninstall.sh
+            dist/*.rpm
             dist/SHA256SUMS

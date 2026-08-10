@@ -10,6 +10,65 @@ project shell.
 
 ## Install
 
+### Requirements
+
+- Linux with systemd
+- [`nix`](https://nixos.org) and [`devenv`](https://devenv.sh) for projects
+- [`caddy`](https://caddyserver.com) on PATH (or under `~/.nix-profile/bin`)
+- For system (portless) mode: `127.0.0.1:80` free
+
+### Plug and play (deb / rpm)
+
+From [GitHub Releases](https://github.com/pynza/neals/releases):
+
+```bash
+# Debian / Ubuntu
+sudo dpkg -i neals_*_amd64.deb          # or *_arm64.deb
+
+# Fedora / RHEL / openSUSE
+sudo rpm -i neals-*-1.x86_64.rpm        # or *.aarch64.rpm
+# or: sudo dnf install ./neals-*.rpm
+```
+
+Post-install asks `[Y/n]` to enable `nealsd@$SUDO_USER` (Caddy on `:80`,
+portless `http://{service}.{project}.localhost/`) and shell completion.
+Overrides: `NEALS_DEB_SETUP=0` skip, `NEALS_DEB_SETUP=y` auto-yes
+(also `NEALS_PKG_SETUP`).
+
+```bash
+NEALS_DEB_SETUP=0 sudo dpkg -i neals_*_amd64.deb
+sudo dpkg -r neals          # remove
+sudo dpkg -P neals          # purge
+sudo rpm -e neals
+```
+
+Unit details: [contrib/systemd/README.md](contrib/systemd/README.md).
+
+### Manual install (Arch / tarball / from source)
+
+```bash
+# From a release .tar.gz / .zip, or after cargo build --release:
+install -m755 neals nealsd ~/.local/bin/
+# or: sudo install -m755 neals nealsd /usr/local/bin/   # or /usr/bin/
+
+sudo install -m644 contrib/systemd/nealsd@.service /etc/systemd/system/
+# set ExecStart= to your nealsd path if not /usr/local/bin/nealsd
+sudo systemctl daemon-reload
+sudo systemctl enable --now "nealsd@$USER"
+```
+
+If `caddy` is only under nix, add a PATH drop-in (`systemctl edit nealsd@$USER`):
+
+```ini
+[Service]
+Environment=PATH=%h/.nix-profile/bin:/usr/local/bin:/usr/bin:/bin
+```
+
+Autocomplete: bash via `/usr/share/bash-completion/completions/neals` if you
+install that file, or add `neals completions bash|zsh|fish` to your shell rc.
+
+Disable later: `sudo systemctl disable --now "nealsd@$USER"`.
+
 ### Development (ad-hoc)
 
 ```bash
@@ -19,32 +78,7 @@ export PATH="$PWD/target/debug:$PATH"
 ```
 
 Ad-hoc mode auto-starts `nealsd` on first use. Caddy listens on
-`127.0.0.1:2015` — URLs need the port:
-
-`http://api.demo.localhost:2015/`
-
-### Recommended: system daemon (portless URLs)
-
-One-time install grants `CAP_NET_BIND_SERVICE` only to `nealsd` (not a
-machine-wide sysctl) so Caddy can bind `127.0.0.1:80`:
-
-```bash
-cargo build --release -p neals -p nealsd
-sudo ./contrib/systemd/install.sh "$USER"
-# later:
-sudo ./contrib/systemd/uninstall.sh "$USER"            # keep user data
-sudo ./contrib/systemd/uninstall.sh --purge "$USER"    # also wipe config/state
-```
-
-Then:
-
-`http://api.demo.localhost/`
-
-After install: `man neals`, `man nealsd`.
-
-Details: [contrib/systemd/README.md](contrib/systemd/README.md).
-
-**Requirements:** Linux + systemd, `nix`, `devenv`, `caddy` on PATH.
+`127.0.0.1:2015` — URLs need the port: `http://api.demo.localhost:2015/`
 
 ## Quick start
 
@@ -113,7 +147,7 @@ Or use the interactive loop: `neals repl`.
 | `neals exec <name> -- …` | One-shot command in devenv |
 | `neals doctor` | Check tools, dirs, bind, daemon |
 | `neals repl` | Interactive command loop |
-| `neals completions <shell>` | Print completion snippet (also offered by `install.sh` as y/N) |
+| `neals completions <shell>` | Print completion snippet for shell rc |
 
 Global: `-y` / `--yes` skips confirmations. `neals --help` for full text.
 
@@ -204,18 +238,11 @@ Nothing is pushed to apt/crates.io/Homebrew — only GitHub Release files.
 
 | Asset | Contents |
 |-------|----------|
-| `neals-v*-x86_64-unknown-linux-gnu.tar.gz` / `.zip` | bins + man + `systemd/install.sh` |
+| `neals-v*-x86_64-unknown-linux-gnu.tar.gz` / `.zip` | bins + man + unit (manual install) |
 | `neals-v*-aarch64-unknown-linux-gnu.tar.gz` / `.zip` | same for arm64 |
-| `neals_*_amd64.deb` / `neals_*_arm64.deb` | system package under `/usr` |
-| `install.sh` / `uninstall.sh` | same helpers (use from an extracted archive) |
+| `neals_*_amd64.deb` / `neals_*_arm64.deb` | `/usr` + postinst hooks |
+| `neals-*-1.x86_64.rpm` / `neals-*-1.aarch64.rpm` | same tree + same hooks |
 | `SHA256SUMS` | checksums |
-
-```bash
-# From a release archive (portless :80 daemon):
-tar xf neals-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
-cd neals-v0.1.0-x86_64-unknown-linux-gnu
-sudo ./systemd/install.sh "$USER"
-```
 
 ```bash
 git tag -a v0.1.0 -m "v0.1.0"
@@ -225,5 +252,5 @@ git push origin v0.1.0
 Local package smoke test (host arch → `./dist`):
 
 ```bash
-./contrib/packaging/package-linux.sh 0.1.0
+CLEAR_DIST=1 ./contrib/packaging/package-linux.sh 0.1.0
 ```

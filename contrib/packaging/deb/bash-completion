@@ -1,0 +1,6 @@
+# shellcheck shell=bash
+# Loaded by bash-completion. Dynamic clap completions (same as: neals completions bash).
+if [[ -x /usr/bin/neals ]]; then
+  # shellcheck disable=SC1090
+  source <(COMPLETE=bash /usr/bin/neals) 2>/dev/null || true
+fi
