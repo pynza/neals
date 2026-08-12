@@ -22,7 +22,7 @@ pub fn enter_project_shell(project: &str, path: &Path) -> Result<ExitCode> {
     match kind {
         ShellKind::Bash => {
             let rc = write_bash_rc(project)?;
-            // devenv: `shell [CMD] [ARGS]...` — do NOT pass a bare `--` (it becomes CMD).
+            // devenv shell: bare `--` becomes CMD — omit it.
             run_in_netns(
                 path,
                 project,
@@ -163,7 +163,6 @@ fn nsenter_devenv(
     devenv_args: &[&str],
     extra_env: &[(&str, &std::ffi::OsStr)],
 ) -> Result<ExitStatus> {
-    // Rootless: enter the project's user+net ns (bwrap --unshare-user --unshare-net).
     let mut cmd = Command::new("nsenter");
     cmd.args([
         "--user",

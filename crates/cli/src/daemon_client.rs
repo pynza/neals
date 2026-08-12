@@ -30,7 +30,7 @@ pub fn ensure_daemon() -> Result<()> {
     }
 
     start_nealsd()?;
-    // nealsd may wait up to ~5s for caddy admin before accepting ping
+    // caddy admin can take a few seconds before ping works
     for _ in 0..40 {
         thread::sleep(Duration::from_millis(250));
         if ping_ok() {

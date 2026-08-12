@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoundTarget {
     Unix { socket_file: String },
-    /// `host_port`: Caddy / host tools. `guest_port`: bind inside the netns.
+    // host_port = host/Caddy; guest_port = bind inside netns
     Tcp { host_port: u16, guest_port: u16 },
 }
 
@@ -21,7 +21,6 @@ pub enum BoundTarget {
 pub struct BoundRoute {
     pub service: String,
     pub target: BoundTarget,
-    /// When true, Neals reverse-proxies via Caddy (`{service}.{project}.localhost`).
     pub proxy: bool,
 }
 
@@ -91,7 +90,6 @@ pub struct RunningProject {
     pub name: String,
     pub child: Child,
     pub pid: u32,
-    /// Process inside the netns (for nsenter / setns).
     pub netns_pid: u32,
     pub started_at: Instant,
     pub bound: Vec<BoundRoute>,

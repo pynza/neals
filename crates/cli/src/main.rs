@@ -61,7 +61,7 @@ Keys in the live view (neals up / logs -f):
     styles = clap_styles()
 )]
 struct Cli {
-    /// Skip confirmation prompts
+    // Skip confirmation prompts
     #[arg(short = 'y', long = "yes", global = true)]
     yes: bool,
 
@@ -79,26 +79,26 @@ fn clap_styles() -> styling::Styles {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Register the current directory in the global project registry
+    // Register the current directory in the global project registry
     #[command(long_about = "\
 Reads `neals.name` from devenv.nix (folder name as fallback) and adds the
 project to ~/.config/neals/projects.json.")]
     Register,
 
-    /// List registered projects
+    // List registered projects
     List,
 
-    /// Remove a project from the registry
+    // Remove a project from the registry
     Unregister {
-        /// Project name as shown by `neals list`
+        // Project name as shown by `neals list`
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
     },
 
-    /// Remove registry entries whose paths no longer exist
+    // Remove registry entries whose paths no longer exist
     Prune,
 
-    /// Start a project (`devenv up`) and open the live log view
+    // Start a project (`devenv up`) and open the live log view
     #[command(long_about = "\
 Starts the project under nealsd, prints HTTP routes, then opens a live view
 with sticky route URLs and scrolling logs.\n\n\
@@ -107,36 +107,36 @@ Use -d/--detach to skip the live view.")]
     Up {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
-        /// Start without opening the live view
+        // Start without opening the live view
         #[arg(short = 'd', long = "detach")]
         detach: bool,
     },
 
-    /// Stop a running project
+    // Stop a running project
     Down {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
     },
 
-    /// Show projects currently running under nealsd
+    // Show projects currently running under nealsd
     Status,
 
-    /// Show a project's daemon log
+    // Show a project's daemon log
     #[command(long_about = "\
 Prints the last 100 log lines. With -f/--follow, opens the same live view
 as `neals up` (routes header + scrolling logs).")]
     Logs {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
-        /// Open the live view and follow new lines
+        // Open the live view and follow new lines
         #[arg(short = 'f', long = "follow")]
         follow: bool,
     },
 
-    /// Check that required tools and directories are available
+    // Check that required tools and directories are available
     Doctor,
 
-    /// Open an interactive shell in the project's devenv
+    // Open an interactive shell in the project's devenv
     #[command(name = "bash", long_about = "\
 Enters a quiet `devenv shell` using $SHELL inside the project's network
 namespace (project must be up). bash/zsh get a short prompt
@@ -146,19 +146,19 @@ namespace (project must be up). bash/zsh get a short prompt
         project: String,
     },
 
-    /// Run a command inside a project's devenv shell
+    // Run a command inside a project's devenv shell
     Exec {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
-        /// Command and args after `--`, e.g. `neals exec app -- npm test`
+        // Command and args after `--`, e.g. `neals exec app -- npm test`
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<String>,
     },
 
-    /// Interactive command loop (list, up, logs, …)
+    // Interactive command loop (list, up, logs, …)
     Repl,
 
-    /// Print shell completion setup for bash, zsh, fish, elvish, or powershell
+    // Print shell completion setup for bash, zsh, fish, elvish, or powershell
     Completions {
         shell: CompletionShell,
     },

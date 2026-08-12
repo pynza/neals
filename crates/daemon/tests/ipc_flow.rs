@@ -282,7 +282,7 @@ async fn crashed_up_process_is_reaped_and_ports_released() {
         Response::Ok
     );
 
-    // Wait until the short-lived child exits, then reap.
+    // Wait for exit, then reap.
     for _ in 0..50 {
         {
             let mut st = state.lock().await;
@@ -299,7 +299,7 @@ async fn crashed_up_process_is_reaped_and_ports_released() {
         other => panic!("expected empty Status after reap, got {other:?}"),
     }
 
-    // A second up must succeed (leases released; no "already running").
+    // Leases freed → second up must work.
     std::env::set_var("NEALS_UP_CMD", "sleep 3600");
     assert_eq!(
         roundtrip(
@@ -334,7 +334,6 @@ async fn multi_project_tcp_routes_have_distinct_hosts_and_ports() {
           neals.route.be = "tcp";
         }"#,
     );
-    // demo already has api=tcp from setup; give it a be=tcp too via rewrite
     fs::write(
         env.root.join("demo-project").join("devenv.nix"),
         r#"{
@@ -606,7 +605,6 @@ async fn concurrent_up_same_preferred_no_collision() {
     .await;
 }
 
-/// Acceptance-style: fixtures under tests/projects bind `$NEALS_REDIS_PORT`.
 #[tokio::test]
 async fn redis_project_fixtures_bind_allocated_ports() {
     require_netns!();
@@ -737,7 +735,6 @@ time.sleep(3600)
         other => panic!("expected Status, got {other:?}"),
     }
 
-    // Both listeners must accept connections.
     for port in [port1, port2] {
         let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await

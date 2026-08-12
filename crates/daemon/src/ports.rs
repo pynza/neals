@@ -2,20 +2,13 @@ use anyhow::{bail, Result};
 use std::collections::HashSet;
 use std::net::TcpListener;
 
-/// Leased TCP ports owned by running Neals projects.
-///
-/// Preferred ports try `start`, then `start+1`, … while checking both the
-/// in-memory lease set and whether `127.0.0.1:port` can be bound.
-///
-/// ponytail: allocate via bind then drop so the app can bind — tiny TOCTOU vs
-/// external processes. Upgrade path: socket activation / FD pass.
+// Leased TCP ports for running projects.
 #[derive(Debug, Default)]
 pub struct PortLeases {
     leased: HashSet<u16>,
 }
 
 impl PortLeases {
-    /// Kernel-ephemeral port (`bind(127.0.0.1:0)`). Used for legacy `route = "tcp"`.
     pub fn allocate(&mut self) -> Result<u16> {
         for _ in 0..64 {
             let listener = TcpListener::bind(("127.0.0.1", 0))?;
@@ -28,7 +21,6 @@ impl PortLeases {
         bail!("failed to allocate a free TCP port on 127.0.0.1");
     }
 
-    /// Allocate starting at `start`, scanning upward. Skips leased and in-use ports.
     pub fn allocate_preferred(&mut self, start: u16) -> Result<u16> {
         if start == 0 {
             return self.allocate();

@@ -238,7 +238,7 @@ fn bind_one(state: &mut AppState, decl: &ServiceDecl) -> Result<BoundRoute, Stri
             }
             .map_err(|e| format!("TCP port alloc for `{}`: {e}", decl.service))?;
 
-            // Preferred stays fixed inside the ns; host may differ if busy.
+            // Preferred port is fixed in the guest; host lease may differ.
             let guest_port = preferred_port.unwrap_or(host_port);
 
             Ok(BoundRoute {

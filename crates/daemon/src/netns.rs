@@ -1,16 +1,13 @@
-//! Per-project network namespace (always on).
-//!
-//! - `bwrap --unshare-user --unshare-net` runs devenv
-//! - `slirp4netns` gives the guest outbound IP only
-//! - host→guest TCP: listen on host, `setns`+connect on a blocking thread, then
-//!   async `copy_bidirectional` (Caddy / tools reach `127.0.0.1` binds inside)
+//! Per-project netns: bwrap + outbound slirp + host→guest TCP via setns.
 
 use crate::state::BoundRoute;
 use anyhow::{bail, Context, Result};
+use nix::libc;
 use nix::sched::{setns, CloneFlags};
 use std::fs::File;
 use std::net::SocketAddr;
 use std::os::fd::AsFd;
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -29,8 +26,8 @@ pub fn require_tools() -> Result<()> {
     }
     if !userns_works() {
         bail!(
-            "nealsd requires unprivileged user namespaces \
-             (bubblewrap cannot create a user ns on this host)"
+            "nealsd cannot create a user namespace (bwrap failed); \
+             check kernel.userns and that the unit is not blocking it"
         );
     }
     Ok(())
@@ -45,7 +42,7 @@ fn which(bin: &str) -> Option<PathBuf> {
     })
 }
 
-/// Wrap `program`/`args` in a user+net namespace. Brings `lo` up inside.
+// bwrap user+net ns; brings `lo` up inside.
 pub fn bwrap_command(program: &str, args: &[String], project_dir: &Path) -> Command {
     let uid = nix::unistd::getuid();
     let gid = nix::unistd::getgid();
@@ -73,7 +70,57 @@ pub fn bwrap_command(program: &str, args: &[String], project_dir: &Path) -> Comm
         .arg(project_dir)
         .args(["--", "/bin/sh", "-c"])
         .arg(shell);
+    unsafe {
+        cmd.pre_exec(clear_caps_for_userns);
+    }
     cmd
+}
+
+fn clear_caps_for_userns() -> std::io::Result<()> {
+    unsafe {
+        let _ = libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL as libc::c_ulong,
+            0,
+            0,
+            0,
+        );
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct CapHeader {
+        version: u32,
+        pid: i32,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct CapData {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+    // LINUX_CAPABILITY_VERSION_3
+    let mut hdr = CapHeader {
+        version: 0x2008_0522,
+        pid: 0,
+    };
+    let data = [CapData {
+        effective: 0,
+        permitted: 0,
+        inheritable: 0,
+    }; 2];
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_capset,
+            std::ptr::addr_of_mut!(hdr),
+            data.as_ptr(),
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn shell_quote(s: &str) -> String {
@@ -103,7 +150,6 @@ impl SlirpHandle {
     }
 }
 
-/// Outbound-only user-mode networking for the guest netns.
 pub async fn start_slirp(netns_pid: u32) -> Result<SlirpHandle> {
     let mut child = Command::new("slirp4netns")
         .args([
@@ -127,7 +173,6 @@ pub async fn start_slirp(netns_pid: u32) -> Result<SlirpHandle> {
     Ok(SlirpHandle { child })
 }
 
-/// Host listener → guest `127.0.0.1:guest_port` via setns on a blocking thread.
 pub fn spawn_port_proxy(
     host_port: u16,
     guest_port: u16,
@@ -166,8 +211,6 @@ async fn proxy_one(
     netns_pid: u32,
     cancel: CancellationToken,
 ) -> Result<()> {
-    // ponytail: setns is thread-local and permanent — dedicated OS thread dies
-    // after connect so the tokio blocking pool is never poisoned.
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
         let _ = tx.send(connect_in_netns(netns_pid, guest_port));
@@ -189,7 +232,7 @@ async fn proxy_one(
 }
 
 fn connect_in_netns(netns_pid: u32, guest_port: u16) -> Result<std::net::TcpStream> {
-    // Enter the project's userns first so rootless netns join is allowed.
+    // userns then netns — required for rootless setns.
     let userns = File::open(format!("/proc/{netns_pid}/ns/user"))
         .with_context(|| format!("open userns of pid {netns_pid}"))?;
     let netns = File::open(format!("/proc/{netns_pid}/ns/net"))
@@ -222,7 +265,7 @@ pub fn start_proxies(
         .collect()
 }
 
-/// PID inside the sandbox netns (bwrap supervisor stays on the host netns).
+// Inner pid (bwrap itself stays on the host netns).
 pub fn netns_pid_for_bwrap(bwrap_pid: u32) -> Option<u32> {
     let path = format!("/proc/{bwrap_pid}/task/{bwrap_pid}/children");
     if let Ok(raw) = std::fs::read_to_string(&path) {
@@ -257,28 +300,28 @@ pub async fn wait_netns_pid(bwrap_pid: u32) -> Result<u32> {
     bail!("timed out waiting for process inside bwrap netns (pid {bwrap_pid})")
 }
 
-/// True if this host can create a rootless user+net namespace (needed by nealsd).
 pub fn userns_works() -> bool {
     let uid = nix::unistd::getuid();
     let gid = nix::unistd::getgid();
-    std::process::Command::new("bwrap")
-        .args([
-            "--unshare-user",
-            "--uid",
-            &uid.to_string(),
-            "--gid",
-            &gid.to_string(),
-            "--unshare-net",
-            "--dev-bind",
-            "/",
-            "/",
-            "--",
-            "true",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    let mut cmd = std::process::Command::new("bwrap");
+    cmd.args([
+        "--unshare-user",
+        "--uid",
+        &uid.to_string(),
+        "--gid",
+        &gid.to_string(),
+        "--unshare-net",
+        "--dev-bind",
+        "/",
+        "/",
+        "--",
+        "true",
+    ])
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
+    unsafe {
+        cmd.pre_exec(clear_caps_for_userns);
+    }
+    cmd.status().map(|s| s.success()).unwrap_or(false)
 }

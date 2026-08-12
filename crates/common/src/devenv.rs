@@ -23,10 +23,9 @@ impl ProjectName {
     }
 }
 
-/// How a declared Neals service is exposed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServiceKind {
-    /// TCP: preferred start port (`None` = ephemeral, legacy `route = "tcp"`).
+    // `None` preferred = ephemeral (legacy `route = "tcp"`).
     Tcp {
         preferred_port: Option<u16>,
         proxy: bool,
@@ -57,7 +56,7 @@ impl ServiceDecl {
     }
 }
 
-/// Legacy route declaration (kept for older APIs/tests). Prefer [`ServiceDecl`].
+// Legacy `neals.route`; prefer [`ServiceDecl`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteKind {
     Unix { socket_file: String },
@@ -76,7 +75,7 @@ impl RouteDecl {
     }
 }
 
-/// Normalize a service name for env vars: `api-backend` → `API_BACKEND`.
+// `api-backend` → `API_BACKEND`
 pub fn env_service_key(service: &str) -> String {
     service
         .chars()
@@ -88,14 +87,12 @@ pub fn env_service_key(service: &str) -> String {
         .collect()
 }
 
-/// Environment variable for an allocated TCP port: `redis` → `NEALS_REDIS_PORT`.
+// `redis` → `NEALS_REDIS_PORT`
 pub fn env_port_var(service: &str) -> String {
     format!("NEALS_{}_PORT", env_service_key(service))
 }
 
-/// Extract literal `neals.name = "..."` from Nix source via rnix AST.
-///
-/// ponytail: no `nix eval` — only string literals; expressions like `neals.name = lib.foo` are ignored.
+// Parse `neals.name = "..."` via rnix (string literals only).
 pub fn parse_neals_name(src: &str) -> Option<String> {
     let bindings = collect_neals_literals(src).ok()?;
     let NixLit::Str(name) = bindings.get(&["name".into()][..])? else {
@@ -108,7 +105,7 @@ pub fn parse_neals_name(src: &str) -> Option<String> {
     }
 }
 
-/// Extract `neals.services` (+ legacy `neals.route`) declarations.
+// `neals.services` (+ legacy `neals.route`).
 pub fn parse_neals_services(src: &str) -> Result<Vec<ServiceDecl>> {
     let bindings = collect_neals_literals(src)?;
     let mut drafts: HashMap<String, ServiceDraft> = HashMap::new();
@@ -169,7 +166,7 @@ pub fn parse_neals_services(src: &str) -> Result<Vec<ServiceDecl>> {
         services.push(draft.into_decl(service)?);
     }
 
-    // Legacy neals.route.* → services (deprecated).
+    // Legacy neals.route.* → services.
     let mut seen: HashMap<String, ()> = services
         .iter()
         .map(|s| (s.service.clone(), ()))
@@ -218,7 +215,7 @@ pub fn parse_neals_services(src: &str) -> Result<Vec<ServiceDecl>> {
     Ok(services)
 }
 
-/// Extract `neals.route.<service> = "file.sock" | "tcp"` (legacy).
+// Legacy `neals.route.<svc> = "sock" | "tcp"`.
 pub fn parse_neals_routes(src: &str) -> Result<Vec<RouteDecl>> {
     Ok(parse_neals_services(src)?
         .into_iter()
@@ -372,7 +369,7 @@ fn lit_str(value: &NixLit, path: &str) -> Result<String> {
     Ok(s.clone())
 }
 
-/// Map relative attr paths under `neals` → literal values.
+// Attr paths under `neals` → literal values.
 fn collect_neals_literals(src: &str) -> Result<HashMap<Vec<String>, NixLit>> {
     let root = Root::parse(src);
     let Some(expr) = root.tree().expr() else {

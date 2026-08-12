@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Synthetic check: bwrap userns+netns, guest listens on 127.0.0.1, host proxies via setns.
-# No devenv / nealsd.
+# bwrap netns + host→guest setns proxy (no devenv/nealsd).
 set -euo pipefail
 
 need() { command -v "$1" >/dev/null || { echo "missing $1"; exit 1; }; }
@@ -37,7 +36,6 @@ sleep 0.2
 INNER=$(tr ' ' '\n' <"/proc/$BWRAP_PID/task/$BWRAP_PID/children" 2>/dev/null | head -1 || true)
 INNER="${INNER:-$BWRAP_PID}"
 
-# Host: setns into guest, connect, also prove host cannot reach guest without setns.
 python3 - "$HOST_PORT" "$GUEST_PORT" "$INNER" <<'PY'
 import os, socket, sys, ctypes, ctypes.util, errno
 
@@ -54,21 +52,17 @@ def setns(path, flag):
     finally:
         os.close(fd)
 
-# Isolation: direct connect from host netns must fail (or hit something else).
 try:
     socket.create_connection(("127.0.0.1", guest_port), timeout=0.3)
-    # If guest_port happens to be open on host, skip isolation assert.
     print("warn: host already has :%d open; skipping isolation assert" % guest_port)
 except (OSError, TimeoutError, socket.timeout):
     pass
 
-# One-shot proxy accept → setns connect on a dedicated fork (dies after).
 srv = socket.socket()
 srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 srv.bind(("127.0.0.1", host_port))
 srv.listen(1)
 
-# Client in another fork so accept can proceed.
 cid = os.fork()
 if cid == 0:
     import time

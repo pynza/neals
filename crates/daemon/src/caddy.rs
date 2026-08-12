@@ -14,7 +14,7 @@ pub struct CaddyManager {
     admin_sock: PathBuf,
     config_path: PathBuf,
     http_addr: String,
-    /// When true, Admin API failures are ignored (test fakes via NEALS_CADDY_CMD).
+    // When true, Admin API failures are ignored (`NEALS_CADDY_CMD` fakes).
     loose: bool,
 }
 
@@ -301,7 +301,7 @@ pub fn http_port_from_addr(addr: &str) -> u16 {
 }
 
 fn https_port_from_addr(addr: &str) -> u16 {
-    // Keep off :443 while automatic_https is disabled (avoids EACCES).
+    // Avoid :443 while automatic_https is off (EACCES without CAP).
     let p = http_port_from_addr(addr);
     if p < 1024 {
         2016

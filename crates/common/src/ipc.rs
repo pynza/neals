@@ -21,7 +21,6 @@ pub enum Response {
 pub struct ProjectRuntime {
     pub name: String,
     pub pid: u32,
-    /// Process inside the project netns (`nsenter -t` target).
     #[serde(default)]
     pub netns_pid: u32,
     pub uptime_secs: u64,

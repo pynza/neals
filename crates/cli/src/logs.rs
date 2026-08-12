@@ -98,7 +98,7 @@ pub fn tail_lines(path: &Path, n: usize) -> Result<Vec<String>> {
     Ok(text.lines().map(str::to_string).collect())
 }
 
-/// Incremental log reader for live views / plain follow.
+// Tailing reader for live / follow.
 pub struct LogFollower {
     path: PathBuf,
     file: File,

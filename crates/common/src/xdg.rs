@@ -45,12 +45,10 @@ pub fn projects_file() -> Result<PathBuf> {
     Ok(config_dir()?.join("projects.json"))
 }
 
-/// Socket path used by the systemd system unit (`nealsd@.service`).
+// System unit socket (`nealsd@.service`).
 pub const SYSTEM_DAEMON_SOCKET: &str = "/run/neals/nealsd.sock";
 
-/// Resolve the nealsd IPC socket.
-///
-/// Order: `NEALS_SOCKET` → system socket if present → `$XDG_RUNTIME_DIR/neals/nealsd.sock`.
+// `NEALS_SOCKET` → system sock if present → `$XDG_RUNTIME_DIR/neals/nealsd.sock`.
 pub fn daemon_socket() -> Result<PathBuf> {
     Ok(daemon_socket_with(
         std::env::var_os("NEALS_SOCKET"),
