@@ -2,16 +2,19 @@
 
 Template unit for the portless daemon: `nealsd@$USER` binds `127.0.0.1:80` via `CAP_NET_BIND_SERVICE` and serves `http://{service}.{project}.localhost/`.
 
+Each project runs in a bubblewrap network namespace; `nealsd` needs `bwrap` and `slirp4netns` on `PATH` (deb/rpm Depends, or install manually).
+
 ## Packaged install
 
-Prefer `.deb` / `.rpm` from [GitHub Releases](https://github.com/pynza/neals/releases) — post-install enables the unit. See the main [README Install](../../README.md#install) section.
+Prefer `.deb` / `.rpm` from [GitHub Releases](https://github.com/pynza/neals/releases) — use `apt install ./…deb` / `dnf install ./…rpm` so Depends resolve. Post-install enables the unit. See the main [README Install](../../README.md#install) section.
 
 ## Manual install
 
-1. Install `neals` and `nealsd` somewhere on `PATH` (e.g. `~/.local/bin` or `/usr/local/bin`).
-2. Copy this unit to `/etc/systemd/system/nealsd@.service`.
-3. Set `ExecStart=` to the real `nealsd` path (default in this file is `/usr/local/bin/nealsd`).
-4. Enable:
+1. Install `bubblewrap` and `slirp4netns` from your distro.
+2. Install `neals` and `nealsd` somewhere on `PATH` (e.g. `~/.local/bin` or `/usr/local/bin`).
+3. Copy this unit to `/etc/systemd/system/nealsd@.service`.
+4. Set `ExecStart=` to the real `nealsd` path (default in this file is `/usr/local/bin/nealsd`).
+5. Enable:
 
 ```bash
 sudo systemctl daemon-reload

@@ -7,15 +7,15 @@ nealsd \- Neals local platform daemon
 .B nealsd
 is the background daemon for
 .BR neals (1).
-It accepts JSON-line requests over a UNIX socket, runs
-.B devenv up
-/
-.B down
-for registered projects, globally allocates loopback TCP ports for
-.B neals.services.*.port
-(preferred start port; next free port if busy), injects
-.BI NEALS_ SERVICE _PORT
-into the project environment, manages
+It accepts JSON-line requests over a UNIX socket, runs each project inside a
+.B bubblewrap
+user+network namespace with
+.B slirp4netns
+for outbound connectivity, bridges host loopback TCP ports into guest
+.B 127.0.0.1
+binds, injects preferred guest ports as
+.BI NEALS_ SERVICE _PORT ,
+manages
 .B .neals
 symlinks for UNIX services, and runs a dedicated Caddy instance that reverse-proxies
 services with
@@ -25,6 +25,13 @@ at
 Legacy
 .B neals.route.*
 declarations are still accepted.
+.PP
+Requires
+.B bwrap
+and
+.B slirp4netns
+on
+.BR PATH .
 .PP
 Prefer starting it via systemd:
 .B nealsd@\fIUSER\fR.service
@@ -90,6 +97,9 @@ Systemd template unit.
 .SH SEE ALSO
 .BR neals (1),
 .BR systemctl (1),
-.BR caddy (1)
+.BR caddy (1),
+.BR bwrap (1),
+.BR slirp4netns (1),
+.BR nsenter (1)
 .SH AUTHORS
 Neals contributors.

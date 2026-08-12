@@ -4,13 +4,27 @@ use neals_common::{
 use nealsd::{handle_request, AppState};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 
 static ENV_LOCK: StdMutex<()> = StdMutex::new(());
+
+fn netns_available() -> bool {
+    static OK: OnceLock<bool> = OnceLock::new();
+    *OK.get_or_init(nealsd::netns::userns_works)
+}
+
+macro_rules! require_netns {
+    () => {
+        if !netns_available() {
+            eprintln!("skip: unprivileged user namespaces unavailable");
+            return;
+        }
+    };
+}
 
 fn unique_temp(prefix: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -102,6 +116,7 @@ async fn roundtrip(state: &Arc<Mutex<AppState>>, request: Request) -> Response {
 
 #[tokio::test]
 async fn ping_up_status_down() {
+    require_netns!();
     let _env = TestEnv::setup();
     let state = Arc::new(Mutex::new(AppState::default()));
 
@@ -251,6 +266,7 @@ async fn socket_ping_roundtrip() {
 
 #[tokio::test]
 async fn crashed_up_process_is_reaped_and_ports_released() {
+    require_netns!();
     let _env = TestEnv::setup();
     std::env::set_var("NEALS_UP_CMD", "true");
     let state = Arc::new(Mutex::new(AppState::default()));
@@ -309,6 +325,7 @@ async fn crashed_up_process_is_reaped_and_ports_released() {
 
 #[tokio::test]
 async fn multi_project_tcp_routes_have_distinct_hosts_and_ports() {
+    require_netns!();
     let env = TestEnv::setup();
     env.add_project(
         "other",
@@ -393,6 +410,7 @@ async fn multi_project_tcp_routes_have_distinct_hosts_and_ports() {
 
 #[tokio::test]
 async fn preferred_ports_private_and_proxy_status() {
+    require_netns!();
     let env = TestEnv::setup();
     fs::write(
         env.root.join("demo-project").join("devenv.nix"),
@@ -446,6 +464,7 @@ async fn preferred_ports_private_and_proxy_status() {
 
 #[tokio::test]
 async fn two_projects_same_preferred_get_distinct_ports() {
+    require_netns!();
     let env = TestEnv::setup();
     let nix = r#"{
       neals.name = "NAME";
@@ -519,6 +538,7 @@ async fn two_projects_same_preferred_get_distinct_ports() {
 
 #[tokio::test]
 async fn concurrent_up_same_preferred_no_collision() {
+    require_netns!();
     let env = TestEnv::setup();
     let nix = r#"{
       neals.name = "NAME";
@@ -589,6 +609,7 @@ async fn concurrent_up_same_preferred_no_collision() {
 /// Acceptance-style: fixtures under tests/projects bind `$NEALS_REDIS_PORT`.
 #[tokio::test]
 async fn redis_project_fixtures_bind_allocated_ports() {
+    require_netns!();
     let env = TestEnv::setup();
     let binder = env.root.join("bind_redis.py");
     fs::write(

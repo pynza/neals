@@ -212,14 +212,15 @@ Priority: optional
 Architecture: ${ARCH_DEB}
 Maintainer: Neals contributors <noreply@users.noreply.github.com>
 Installed-Size: ${INSTALLED_SIZE}
-Depends: libc6
+Depends: libc6, bubblewrap, slirp4netns
 Recommends: caddy, bash-completion
 Homepage: https://github.com/pynza/neals
 Description: Local devenv project orchestrator
- Neals registers devenv projects, runs them via nealsd, allocates loopback
- TCP ports, and reverse-proxies {service}.{project}.localhost with Caddy.
- On install (sudo dpkg -i / rpm -i), optionally enables nealsd@\$SUDO_USER
- and shell completion.
+ Neals registers devenv projects, runs each in a network namespace via
+ bubblewrap/slirp4netns, allocates host loopback ports, and reverse-proxies
+ {service}.{project}.localhost with Caddy.
+ On install (sudo apt install ./neals_*.deb / dnf install ./neals-*.rpm),
+ optionally enables nealsd@\$SUDO_USER and shell completion.
 EOF
 
 install -m755 contrib/packaging/deb/postinst "$PKG/DEBIAN/postinst"
@@ -245,13 +246,16 @@ section: utils
 maintainer: Neals contributors <noreply@users.noreply.github.com>
 description: |
   Local devenv project orchestrator.
-  Registers devenv projects, runs them via nealsd, allocates loopback TCP
-  ports, and reverse-proxies {service}.{project}.localhost with Caddy.
+  Registers devenv projects, runs each in a network namespace via
+  bubblewrap/slirp4netns, allocates host loopback ports, and reverse-proxies
+  {service}.{project}.localhost with Caddy.
   On install, optionally enables nealsd@\$SUDO_USER and shell completion.
 homepage: https://github.com/pynza/neals
 license: MIT
 depends:
   - glibc
+  - bubblewrap
+  - slirp4netns
 recommends:
   - caddy
   - bash-completion

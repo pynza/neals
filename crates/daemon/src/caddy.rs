@@ -180,7 +180,7 @@ pub fn build_caddy_config(
                     let sock = runtime.join(project).join(socket_file);
                     format!("unix/{}", sock.display())
                 }
-                BoundTarget::Tcp { port } => format!("127.0.0.1:{port}"),
+                BoundTarget::Tcp { host_port, .. } => format!("127.0.0.1:{host_port}"),
             };
             routes.push(json!({
                 "match": [{ "host": [host] }],
@@ -384,7 +384,10 @@ mod tests {
                 },
                 BoundRoute {
                     service: "api".into(),
-                    target: BoundTarget::Tcp { port: 38471 },
+                    target: BoundTarget::Tcp {
+                        host_port: 38471,
+                        guest_port: 38471,
+                    },
                     proxy: true,
                 },
             ],
@@ -410,12 +413,18 @@ mod tests {
                 vec![
                     BoundRoute {
                         service: "be".into(),
-                        target: BoundTarget::Tcp { port: 11111 },
+                        target: BoundTarget::Tcp {
+                            host_port: 11111,
+                            guest_port: 11111,
+                        },
                         proxy: true,
                     },
                     BoundRoute {
                         service: "admin".into(),
-                        target: BoundTarget::Tcp { port: 11112 },
+                        target: BoundTarget::Tcp {
+                            host_port: 11112,
+                            guest_port: 11112,
+                        },
                         proxy: true,
                     },
                 ],
@@ -424,7 +433,10 @@ mod tests {
                 "demo2".into(),
                 vec![BoundRoute {
                     service: "be".into(),
-                    target: BoundTarget::Tcp { port: 22222 },
+                    target: BoundTarget::Tcp {
+                        host_port: 22222,
+                        guest_port: 22222,
+                    },
                     proxy: true,
                 }],
             ),
@@ -450,12 +462,18 @@ mod tests {
             vec![
                 BoundRoute {
                     service: "redis".into(),
-                    target: BoundTarget::Tcp { port: 6379 },
+                    target: BoundTarget::Tcp {
+                        host_port: 6379,
+                        guest_port: 6379,
+                    },
                     proxy: false,
                 },
                 BoundRoute {
                     service: "api".into(),
-                    target: BoundTarget::Tcp { port: 8000 },
+                    target: BoundTarget::Tcp {
+                        host_port: 8000,
+                        guest_port: 8000,
+                    },
                     proxy: true,
                 },
             ],

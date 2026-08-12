@@ -24,15 +24,16 @@ use std::process::ExitCode;
 
 const LONG_ABOUT: &str = "\
 Neals orchestrates local devenv projects: registry, lifecycle (up/down),
-HTTP routes via a dedicated Caddy, and branded project shells.
+per-project network namespaces, HTTP routes via Caddy, and branded shells.
 
 Typical flow:
   neals register
   neals up my-app          # live view: routes + logs
   # browser → http://api.my-app.localhost/  (system daemon)
   #        or http://api.my-app.localhost:2015/  (ad-hoc)
+  neals bash my-app        # same netns as the running project
 
-Install the system daemon for portless URLs (CAP_NET_BIND_SERVICE on :80):
+Requires bubblewrap + slirp4netns. System daemon for portless :80 URLs:
   see contrib/systemd/README.md
 ";
 
@@ -137,8 +138,9 @@ as `neals up` (routes header + scrolling logs).")]
 
     /// Open an interactive shell in the project's devenv
     #[command(name = "bash", long_about = "\
-Enters a quiet `devenv shell` using $SHELL. bash/zsh get a short prompt
-`neals:<project>`; use `neals status` for services.")]
+Enters a quiet `devenv shell` using $SHELL inside the project's network
+namespace (project must be up). bash/zsh get a short prompt
+`neals:<project>`; use `neals status` for host/guest ports.")]
     Bash {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,

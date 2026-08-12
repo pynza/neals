@@ -1,16 +1,20 @@
 use crate::caddy::CaddyManager;
+use crate::netns::SlirpHandle;
 use crate::ports::PortLeases;
 use neals_common::ProjectRuntime;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 use tokio::process::Child;
+use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoundTarget {
     Unix { socket_file: String },
-    Tcp { port: u16 },
+    /// `host_port`: Caddy / host tools. `guest_port`: bind inside the netns.
+    Tcp { host_port: u16, guest_port: u16 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,24 +40,48 @@ impl BoundRoute {
                     format!("http://{host}:{proxy_port}/")
                 }
             }
-            BoundTarget::Tcp { port } if self.proxy => {
+            BoundTarget::Tcp {
+                host_port,
+                guest_port,
+            } if self.proxy => {
                 let host = self.public_host(project);
                 let url = if proxy_port == 80 {
                     format!("http://{host}/")
                 } else {
                     format!("http://{host}:{proxy_port}/")
                 };
-                format!("{url} → 127.0.0.1:{port}")
+                if host_port == guest_port {
+                    format!("{url} → 127.0.0.1:{host_port}")
+                } else {
+                    format!("{url} → 127.0.0.1:{host_port} (guest :{guest_port})")
+                }
             }
-            BoundTarget::Tcp { port } => {
-                format!("{} → 127.0.0.1:{port}", self.service)
+            BoundTarget::Tcp {
+                host_port,
+                guest_port,
+            } => {
+                if host_port == guest_port {
+                    format!("{} → 127.0.0.1:{host_port}", self.service)
+                } else {
+                    format!(
+                        "{} → 127.0.0.1:{host_port} (guest :{guest_port})",
+                        self.service
+                    )
+                }
             }
         }
     }
 
     pub fn tcp_port(&self) -> Option<u16> {
         match self.target {
-            BoundTarget::Tcp { port } => Some(port),
+            BoundTarget::Tcp { host_port, .. } => Some(host_port),
+            BoundTarget::Unix { .. } => None,
+        }
+    }
+
+    pub fn guest_tcp_port(&self) -> Option<u16> {
+        match self.target {
+            BoundTarget::Tcp { guest_port, .. } => Some(guest_port),
             BoundTarget::Unix { .. } => None,
         }
     }
@@ -63,9 +91,14 @@ pub struct RunningProject {
     pub name: String,
     pub child: Child,
     pub pid: u32,
+    /// Process inside the netns (for nsenter / setns).
+    pub netns_pid: u32,
     pub started_at: Instant,
     pub bound: Vec<BoundRoute>,
     pub project_path: PathBuf,
+    pub slirp: SlirpHandle,
+    pub cancel: CancellationToken,
+    pub _proxy_tasks: Vec<JoinHandle<()>>,
 }
 
 pub struct AppState {
@@ -99,6 +132,7 @@ impl AppState {
             .map(|p| ProjectRuntime {
                 name: p.name.clone(),
                 pid: p.pid,
+                netns_pid: p.netns_pid,
                 uptime_secs: p.started_at.elapsed().as_secs(),
                 routes: p
                     .bound
@@ -113,7 +147,6 @@ impl AppState {
         self.projects.contains_key(name)
     }
 
-    /// All bound services (including private TCP without Caddy).
     pub fn bound_snapshot(&self) -> Vec<(String, Vec<BoundRoute>)> {
         self.projects
             .values()
@@ -121,7 +154,6 @@ impl AppState {
             .collect()
     }
 
-    /// Only services that should appear in Caddy (proxy / UNIX).
     pub fn proxy_snapshot(&self) -> Vec<(String, Vec<BoundRoute>)> {
         self.projects
             .values()
@@ -136,8 +168,9 @@ impl AppState {
             .collect()
     }
 
-    /// Release leases, cleanup `.neals/`, refresh Caddy. Project must already be removed.
     pub async fn finish_cleanup(&mut self, running: &RunningProject) {
+        running.cancel.cancel();
+        running.slirp.stop().await;
         for route in &running.bound {
             if let Some(port) = route.tcp_port() {
                 self.leases.release(port);
@@ -154,12 +187,12 @@ impl AppState {
         let Some(mut running) = self.projects.remove(name) else {
             return Err(format!("project `{name}` is not running"));
         };
+        running.cancel.cancel();
         stop_process_group(running.pid, &mut running.child).await;
         self.finish_cleanup(&running).await;
         Ok(())
     }
 
-    /// Reap children that exited on their own (crash/OOM) — same cleanup as Down.
     pub async fn reap_exited(&mut self) {
         let mut dead = Vec::new();
         for (name, project) in self.projects.iter_mut() {

@@ -1,4 +1,5 @@
 use crate::caddy::{ensure_neals_symlinks, project_runtime_dir};
+use crate::netns::{self, bwrap_command, require_tools, start_proxies, wait_netns_pid};
 use crate::state::{AppState, BoundRoute, BoundTarget, RunningProject};
 use neals_common::{
     ensure_dir, env_port_var, read_neals_services, state_dir, Registry, Request, Response,
@@ -8,8 +9,8 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::process::Command;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 pub async fn handle_request(request: Request, state: &Arc<Mutex<AppState>>) -> Response {
     match request {
@@ -57,13 +58,14 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
         project
     };
 
+    require_tools().map_err(|e| e.to_string())?;
+
     let services = read_neals_services(&project.path).map_err(|e| e.to_string())?;
 
     let runtime_proj = project_runtime_dir(name).map_err(|e| e.to_string())?;
     ensure_dir(&runtime_proj).map_err(|e| e.to_string())?;
     ensure_neals_symlinks(&project.path, name, &services).map_err(|e| e.to_string())?;
 
-    // Allocate all ports atomically under one lock hold.
     let bound = {
         let mut state = state.lock().await;
         match bind_services(&mut state, &services) {
@@ -96,17 +98,15 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
         .map_err(|e| format!("failed to clone log handle: {e}"))?;
 
     let (program, args) = up_command();
-    let mut cmd = Command::new(&program);
-    cmd.args(&args)
-        .current_dir(&project.path)
-        .env("NEALS_RUNTIME", &runtime_proj)
+    let mut cmd = bwrap_command(&program, &args, &project.path);
+    cmd.env("NEALS_RUNTIME", &runtime_proj)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_err));
 
     for route in &bound {
-        if let BoundTarget::Tcp { port } = route.target {
-            cmd.env(env_port_var(&route.service), port.to_string());
+        if let Some(guest) = route.guest_tcp_port() {
+            cmd.env(env_port_var(&route.service), guest.to_string());
         }
     }
 
@@ -136,8 +136,48 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
         }
     };
 
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    if let Ok(Some(status)) = child.try_wait() {
+        let mut state = state.lock().await;
+        release_bound_ports(&mut state, &bound);
+        let snapshot = state.proxy_snapshot();
+        let _ = state.caddy.apply_routes(&snapshot).await;
+        return Err(format!(
+            "bwrap exited early ({status}); need unprivileged user namespaces \
+             (bubblewrap + kernel.userns)"
+        ));
+    }
+    let netns_pid = match wait_netns_pid(pid).await {
+        Ok(p) => p,
+        Err(e) => {
+            stop_spawned(pid, &mut child).await;
+            let mut state = state.lock().await;
+            release_bound_ports(&mut state, &bound);
+            let snapshot = state.proxy_snapshot();
+            let _ = state.caddy.apply_routes(&snapshot).await;
+            return Err(e.to_string());
+        }
+    };
+
+    let slirp = match netns::start_slirp(netns_pid).await {
+        Ok(handle) => handle,
+        Err(e) => {
+            stop_spawned(pid, &mut child).await;
+            let mut state = state.lock().await;
+            release_bound_ports(&mut state, &bound);
+            let snapshot = state.proxy_snapshot();
+            let _ = state.caddy.apply_routes(&snapshot).await;
+            return Err(format!("slirp4netns: {e:#}"));
+        }
+    };
+
+    let cancel = CancellationToken::new();
+    let proxy_tasks = start_proxies(&bound, netns_pid, &cancel);
+
     let mut state = state.lock().await;
     if state.is_running(name) {
+        cancel.cancel();
+        slirp.stop().await;
         stop_spawned(pid, &mut child).await;
         release_bound_ports(&mut state, &bound);
         let snapshot = state.proxy_snapshot();
@@ -150,9 +190,13 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
             name: name.to_string(),
             child,
             pid,
+            netns_pid,
             started_at: Instant::now(),
             bound,
             project_path: project.path,
+            slirp,
+            cancel,
+            _proxy_tasks: proxy_tasks,
         },
     );
     Ok(())
@@ -164,8 +208,7 @@ fn bind_services(
 ) -> Result<Vec<BoundRoute>, String> {
     let mut bound = Vec::with_capacity(services.len());
     for decl in services {
-        let result = bind_one(state, decl);
-        match result {
+        match bind_one(state, decl) {
             Ok(route) => bound.push(route),
             Err(err) => {
                 release_bound_ports(state, &bound);
@@ -189,14 +232,21 @@ fn bind_one(state: &mut AppState, decl: &ServiceDecl) -> Result<BoundRoute, Stri
             preferred_port,
             proxy,
         } => {
-            let port = match preferred_port {
+            let host_port = match preferred_port {
                 Some(start) => state.leases.allocate_preferred(*start),
                 None => state.leases.allocate(),
             }
             .map_err(|e| format!("TCP port alloc for `{}`: {e}", decl.service))?;
+
+            // Preferred stays fixed inside the ns; host may differ if busy.
+            let guest_port = preferred_port.unwrap_or(host_port);
+
             Ok(BoundRoute {
                 service: decl.service.clone(),
-                target: BoundTarget::Tcp { port },
+                target: BoundTarget::Tcp {
+                    host_port,
+                    guest_port,
+                },
                 proxy: *proxy,
             })
         }

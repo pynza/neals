@@ -1,6 +1,7 @@
+use crate::daemon_client::with_daemon;
 use crate::style;
 use anyhow::{bail, Context, Result};
-use neals_common::{ensure_dir, state_dir};
+use neals_common::{ensure_dir, state_dir, Request, Response};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,6 +15,7 @@ enum ShellKind {
 }
 
 pub fn enter_project_shell(project: &str, path: &Path) -> Result<ExitCode> {
+    let netns_pid = require_netns_pid(project)?;
     let kind = detect_shell();
     let shell_path = shell_executable();
 
@@ -21,9 +23,10 @@ pub fn enter_project_shell(project: &str, path: &Path) -> Result<ExitCode> {
         ShellKind::Bash => {
             let rc = write_bash_rc(project)?;
             // devenv: `shell [CMD] [ARGS]...` — do NOT pass a bare `--` (it becomes CMD).
-            run_devenv(
+            run_in_netns(
                 path,
                 project,
+                netns_pid,
                 &[
                     "--quiet",
                     "shell",
@@ -36,16 +39,13 @@ pub fn enter_project_shell(project: &str, path: &Path) -> Result<ExitCode> {
         }
         ShellKind::Zsh => {
             let zdot = write_zsh_dir(project)?;
-            let status = Command::new("devenv")
-                .args(["--quiet", "shell", &shell_path, "-i"])
-                .current_dir(path)
-                .env("ZDOTDIR", &zdot)
-                .env("NEALS_PROJECT", project)
-                .stdin(Stdio::inherit())
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
-                .status()
-                .context("failed to run `devenv` (is it installed and on PATH?)")?;
+            let status = nsenter_devenv(
+                path,
+                project,
+                netns_pid,
+                &["--quiet", "shell", &shell_path, "-i"],
+                &[("ZDOTDIR", zdot.as_os_str())],
+            )?;
             Ok(exit_code_from_status(status))
         }
         ShellKind::Other => {
@@ -53,7 +53,12 @@ pub fn enter_project_shell(project: &str, path: &Path) -> Result<ExitCode> {
                 "branded prompt not configured for `{}`",
                 shell_path
             ));
-            run_devenv(path, project, &["--quiet", "shell", &shell_path, "-i"])
+            run_in_netns(
+                path,
+                project,
+                netns_pid,
+                &["--quiet", "shell", &shell_path, "-i"],
+            )
         }
     }
 }
@@ -62,9 +67,26 @@ pub fn run_project_exec(project: &str, path: &Path, command: &[String]) -> Resul
     if command.is_empty() {
         bail!("no command provided");
     }
+    let netns_pid = require_netns_pid(project)?;
     let mut args: Vec<&str> = vec!["--quiet", "shell"];
     args.extend(command.iter().map(String::as_str));
-    run_devenv(path, project, &args)
+    run_in_netns(path, project, netns_pid, &args)
+}
+
+fn require_netns_pid(project: &str) -> Result<u32> {
+    match with_daemon(Request::Status)? {
+        Response::Status { projects } => {
+            let Some(p) = projects.iter().find(|p| p.name == project) else {
+                bail!("project `{project}` is not running; start it with `neals up {project}`");
+            };
+            if p.netns_pid == 0 {
+                bail!("project `{project}` has no netns pid (daemon too old?)");
+            }
+            Ok(p.netns_pid)
+        }
+        Response::Error { message } => bail!(message),
+        _ => bail!("unexpected daemon response for Status"),
+    }
 }
 
 fn detect_shell() -> ShellKind {
@@ -129,17 +151,40 @@ fi
     Ok(dir)
 }
 
-fn run_devenv(dir: &Path, project: &str, args: &[&str]) -> Result<ExitCode> {
-    let status = Command::new("devenv")
-        .args(args)
-        .current_dir(dir)
-        .env("NEALS_PROJECT", project)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .context("failed to run `devenv` (is it installed and on PATH?)")?;
+fn run_in_netns(dir: &Path, project: &str, netns_pid: u32, args: &[&str]) -> Result<ExitCode> {
+    let status = nsenter_devenv(dir, project, netns_pid, args, &[])?;
     Ok(exit_code_from_status(status))
+}
+
+fn nsenter_devenv(
+    dir: &Path,
+    project: &str,
+    netns_pid: u32,
+    devenv_args: &[&str],
+    extra_env: &[(&str, &std::ffi::OsStr)],
+) -> Result<ExitStatus> {
+    // Rootless: enter the project's user+net ns (bwrap --unshare-user --unshare-net).
+    let mut cmd = Command::new("nsenter");
+    cmd.args([
+        "--user",
+        "--net",
+        "--preserve-credentials",
+        "-t",
+        &netns_pid.to_string(),
+        "--",
+        "devenv",
+    ])
+    .args(devenv_args)
+    .current_dir(dir)
+    .env("NEALS_PROJECT", project)
+    .stdin(Stdio::inherit())
+    .stdout(Stdio::inherit())
+    .stderr(Stdio::inherit());
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    cmd.status()
+        .context("failed to run `nsenter`/`devenv` (is util-linux + devenv on PATH?)")
 }
 
 fn exit_code_from_status(status: ExitStatus) -> ExitCode {

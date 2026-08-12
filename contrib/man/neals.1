@@ -9,9 +9,17 @@ neals \- local platform orchestrator for devenv projects
 .B neals
 registers devenv projects, talks to the
 .B nealsd
-daemon over a UNIX socket, starts and stops projects, exposes HTTP routes at
+daemon over a UNIX socket, starts and stops projects in per-project network
+namespaces, exposes HTTP routes at
 .BI {service}.{project}.localhost
-via Caddy, and provides a live log view plus a quiet project shell.
+via Caddy, and provides a live log view plus a project shell in the same
+namespace.
+.PP
+Requires
+.B bubblewrap
+and
+.B slirp4netns
+on the host.
 .PP
 With the systemd system unit installed, Caddy listens on
 .B 127.0.0.1:80
@@ -73,13 +81,15 @@ opens the live view.
 .BI bash " name"
 Enter a quiet
 .B devenv shell
-using
+in the project's network namespace (project must be
+.BR up ).
+Uses
 .BR $SHELL .
 bash/zsh get a short prompt
 .BI neals: name\fR.
 .TP
 .BI exec " name \-\- command\&..."
-Run a command inside the project devenv.
+Run a command inside the project netns and devenv.
 .TP
 .B doctor
 Check tools, directories, HTTP bind, and daemon.
@@ -129,11 +139,15 @@ On
 .BR up ,
 each
 .B neals.services.\fIsvc\fR.port
-allocation injects
+preferred port is fixed
+.B inside
+the netns and injected as
 .BI NEALS_ SERVICE _PORT
 (e.g.
-.BR NEALS_REDIS_PORT )
-before processes start.
+.BR NEALS_REDIS_PORT ).
+The host may get a different loopback port when the preferred one is busy;
+.B status
+shows host ports (and guest when they differ).
 UNIX services also get
 .BR NEALS_RUNTIME .
 Legacy

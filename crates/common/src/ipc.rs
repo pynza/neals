@@ -21,6 +21,9 @@ pub enum Response {
 pub struct ProjectRuntime {
     pub name: String,
     pub pid: u32,
+    /// Process inside the project netns (`nsenter -t` target).
+    #[serde(default)]
+    pub netns_pid: u32,
     pub uptime_secs: u64,
     #[serde(default)]
     pub routes: Vec<String>,
@@ -105,6 +108,7 @@ mod tests {
                 projects: vec![ProjectRuntime {
                     name: "demo".into(),
                     pid: 42,
+                    netns_pid: 43,
                     uptime_secs: 120,
                     routes: vec!["backend.demo.localhost".into()],
                 }],
