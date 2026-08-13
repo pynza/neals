@@ -100,7 +100,7 @@ EOF
   systemctl enable --now "nealsd@${user}.service"
   mkdir -p "$STATE_DIR"
   echo "$user" >"$STATE_USER"
-  echo "neals: enabled nealsd@${user} (http://{service}.{project}.localhost/ on :80)"
+  echo "neals: enabled nealsd@${user} (prefers :80, falls back if busy)"
 }
 
 # deb: configure | rpm %post: 1=install, 2=upgrade
@@ -123,7 +123,7 @@ configure|1|2)
   fi
 
   echo "neals: configuring for user ${USER_NAME}"
-  if ask_yes_no "Enable nealsd@${USER_NAME} (portless *.localhost on :80) and shell completion? [Y/n] "; then
+  if ask_yes_no "Enable nealsd@${USER_NAME} (*.localhost; prefers :80) and shell completion? [Y/n] "; then
     enable_daemon "$USER_NAME"
     setup_user_completion "$USER_NAME"
     echo "neals: try: neals doctor"

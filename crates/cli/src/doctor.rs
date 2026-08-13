@@ -224,8 +224,19 @@ fn check_daemon_ping() -> Check {
         Ok(Response::Pong) => Check::ok("daemon", "responding"),
         Ok(other) => Check::fail("daemon", format!("unexpected: {other:?}")),
         Err(_) if Path::new(SYSTEM_DAEMON_SOCKET).exists() => {
-            Check::ok("daemon", "not running — sudo systemctl start 'nealsd@$USER'")
+            let unit = systemctl_unit_hint();
+            Check::warn(
+                "daemon",
+                format!("not responding — journalctl -u {unit} -n 50"),
+            )
         }
-        Err(_) => Check::ok("daemon", "not running (auto-starts on `neals up`)"),
+        Err(_) => Check::info("daemon", "not running (auto-starts on `neals up`)"),
+    }
+}
+
+fn systemctl_unit_hint() -> String {
+    match std::env::var("USER") {
+        Ok(u) if !u.is_empty() => format!("\"nealsd@{u}\""),
+        _ => "\"nealsd@$USER\"".into(),
     }
 }

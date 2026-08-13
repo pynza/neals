@@ -810,7 +810,7 @@ dependencies = [
 
 [[package]]
 name = "neals"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -824,7 +824,7 @@ dependencies = [
 
 [[package]]
 name = "neals-common"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "rnix",
@@ -834,7 +834,7 @@ dependencies = [
 
 [[package]]
 name = "nealsd"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "neals-common",

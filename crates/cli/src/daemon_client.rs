@@ -21,10 +21,14 @@ pub fn ensure_daemon() -> Result<()> {
 
     let sock = daemon_socket()?;
     if is_system_daemon_socket(&sock) {
+        let unit = match std::env::var("USER") {
+            Ok(u) if !u.is_empty() => format!("\"nealsd@{u}\""),
+            _ => "\"nealsd@$USER\"".into(),
+        };
         bail!(
             "system nealsd is not running (socket {SYSTEM_DAEMON_SOCKET}).\n\
              Start it with:\n\
-               sudo systemctl start 'nealsd@$USER'\n\
+               sudo systemctl start {unit}\n\
              Or see contrib/systemd/README.md"
         );
     }

@@ -1,6 +1,6 @@
 # systemd unit (`nealsd@.service`)
 
-Template unit for the portless daemon: `nealsd@$USER` binds `127.0.0.1:80` via `CAP_NET_BIND_SERVICE` and serves `http://{service}.{project}.localhost/`.
+Template unit for the system daemon: `nealsd@$USER` gets `CAP_NET_BIND_SERVICE` so Caddy can take `:80` when free (else `:2015`+). Serves `http://{service}.{project}.localhost[:port]/`.
 
 Each project runs in a bubblewrap network namespace; `nealsd` needs `bwrap` and `slirp4netns` on `PATH` (deb/rpm Depends, or install manually).
 

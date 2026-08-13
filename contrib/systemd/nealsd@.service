@@ -18,7 +18,7 @@ RuntimeDirectoryMode=0700
 Environment=XDG_RUNTIME_DIR=/run
 
 Environment=NEALS_MODE=system
-Environment=NEALS_CADDY_HTTP_ADDR=127.0.0.1:80
+# Caddy port: prefer :80, else :2015+, via nealsd (do not pin NEALS_CADDY_HTTP_ADDR here)
 
 # Override path: systemctl edit nealsd@USER
 ExecStart=/usr/local/bin/nealsd
