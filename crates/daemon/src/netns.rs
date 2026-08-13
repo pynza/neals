@@ -43,7 +43,14 @@ fn which(bin: &str) -> Option<PathBuf> {
 }
 
 // bwrap user+net ns; brings `lo` up inside.
-pub fn bwrap_command(program: &str, args: &[String], project_dir: &Path) -> Command {
+// `runtime_neals` is host `$XDG_RUNTIME_DIR/neals` (or `/run/neals`); remounted after a
+// writable tmpfs /run so devenv can create `/run/devenv-*`.
+pub fn bwrap_command(
+    program: &str,
+    args: &[String],
+    project_dir: &Path,
+    runtime_neals: &Path,
+) -> Command {
     let uid = nix::unistd::getuid();
     let gid = nix::unistd::getgid();
     let mut shell = String::from("ip link set lo up 2>/dev/null || true; exec ");
@@ -65,8 +72,9 @@ pub fn bwrap_command(program: &str, args: &[String], project_dir: &Path) -> Comm
             "--dev-bind",
             "/",
             "/",
-            "--chdir",
-        ])
+        ]);
+    mount_writable_run(&mut cmd, runtime_neals);
+    cmd.arg("--chdir")
         .arg(project_dir)
         .args(["--", "/bin/sh", "-c"])
         .arg(shell);
@@ -74,6 +82,22 @@ pub fn bwrap_command(program: &str, args: &[String], project_dir: &Path) -> Comm
         cmd.pre_exec(clear_caps_for_userns);
     }
     cmd
+}
+
+/// Host `/run` is root-owned; devenv needs to mkdir `/run/devenv-*`.
+fn mount_writable_run(cmd: &mut Command, runtime_neals: &Path) {
+    cmd.arg("--tmpfs").arg("/run");
+    let Ok(rel) = runtime_neals.strip_prefix("/run") else {
+        return;
+    };
+    let mut acc = PathBuf::from("/run");
+    for c in rel.components() {
+        acc.push(c);
+        if acc.as_path() != runtime_neals {
+            cmd.arg("--dir").arg(&acc);
+        }
+    }
+    cmd.arg("--bind").arg(runtime_neals).arg(runtime_neals);
 }
 
 fn clear_caps_for_userns() -> std::io::Result<()> {

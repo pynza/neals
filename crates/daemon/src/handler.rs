@@ -5,7 +5,7 @@ use neals_common::{
     ensure_dir, env_port_var, read_neals_services, state_dir, Registry, Request, Response,
     ServiceDecl, ServiceKind,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
@@ -98,7 +98,15 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
         .map_err(|e| format!("failed to clone log handle: {e}"))?;
 
     let (program, args) = up_command();
-    let mut cmd = bwrap_command(&program, &args, &project.path);
+    let runtime_root = match neals_common::runtime_dir() {
+        Ok(p) => p,
+        Err(e) => {
+            let mut state = state.lock().await;
+            release_bound_ports(&mut state, &bound);
+            return Err(format!("runtime dir: {e:#}"));
+        }
+    };
+    let mut cmd = bwrap_command(&program, &args, &project.path, &runtime_root);
     cmd.env("NEALS_RUNTIME", &runtime_proj)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log_file))
@@ -142,9 +150,14 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
         release_bound_ports(&mut state, &bound);
         let snapshot = state.proxy_snapshot();
         let _ = state.caddy.apply_routes(&snapshot).await;
+        let tail = last_log_lines(&log_path, 8);
         return Err(format!(
-            "bwrap exited early ({status}); need unprivileged user namespaces \
-             (bubblewrap + kernel.userns)"
+            "project process exited early ({status}){}",
+            if tail.is_empty() {
+                String::new()
+            } else {
+                format!("\n{tail}")
+            }
         ));
     }
     let netns_pid = match wait_netns_pid(pid).await {
@@ -265,6 +278,14 @@ fn project_log_path(name: &str) -> anyhow::Result<PathBuf> {
     let dir = state_dir()?;
     ensure_dir(&dir)?;
     Ok(dir.join(format!("{name}.log")))
+}
+
+fn last_log_lines(path: &Path, n: usize) -> String {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return String::new();
+    };
+    let lines: Vec<&str> = text.lines().rev().take(n).collect();
+    lines.into_iter().rev().collect::<Vec<_>>().join("\n")
 }
 
 fn up_command() -> (String, Vec<String>) {

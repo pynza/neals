@@ -506,16 +506,26 @@ mod tests {
     }
 
     #[test]
-    fn pick_http_port_skips_busy_2015() {
+    fn pick_http_port_skips_busy_preferred() {
         use std::net::TcpListener;
-        let _hold2015 = TcpListener::bind(("127.0.0.1", 2015)).expect("hold :2015");
-        let _hold80 = TcpListener::bind(("127.0.0.1", 80)).ok();
+        // Hold whatever we can of the preferred range (live nealsd may already own :2015).
+        let holders: Vec<TcpListener> = [80u16, 2015, 2016, 2017, 2018]
+            .into_iter()
+            .filter_map(|p| TcpListener::bind(("127.0.0.1", p)).ok())
+            .collect();
+        let held: Vec<u16> = holders
+            .iter()
+            .filter_map(|l| l.local_addr().ok().map(|a| a.port()))
+            .collect();
         let port = pick_http_port().unwrap();
-        // :2015 held; :80 held or unbindable for this process → ≥ 2016
         assert!(
-            port >= 2016,
-            "expected fallback ≥ 2016, got {port} (held80={})",
-            _hold80.is_some()
+            !held.contains(&port),
+            "pick returned busy port {port} (held {held:?})"
+        );
+        // Probe drop → still free for a real bind.
+        assert!(
+            TcpListener::bind(("127.0.0.1", port)).is_ok(),
+            "picked port {port} not bindable"
         );
     }
 }

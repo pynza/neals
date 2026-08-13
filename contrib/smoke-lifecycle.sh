@@ -3,7 +3,7 @@
 # Isolated XDG + NEALS_SOCKET; UP_CMD=sleep (no ferrari/devenv stack).
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 need() { command -v "$1" >/dev/null || { echo "missing $1"; exit 1; }; }
@@ -20,7 +20,11 @@ fi
 
 echo "==> build"
 if [[ -d .cargo-home ]]; then export CARGO_HOME="$ROOT/.cargo-home"; fi
+# Agent/CI may set CARGO_TARGET_DIR elsewhere; prefer repo-local target for PATH.
+unset CARGO_TARGET_DIR
 cargo build -q -p neals -p nealsd
+BIN="$ROOT/target/debug"
+export PATH="$BIN:$PATH"
 
 TMP=$(mktemp -d)
 NEALSD_PID=""
@@ -35,8 +39,15 @@ export XDG_STATE_HOME="$TMP/state"
 export XDG_RUNTIME_DIR="$TMP/runtime"
 export NEALS_SOCKET="$TMP/runtime/neals/nealsd.sock"
 export NEALS_CADDY_CMD="-"
-export NEALS_UP_CMD="sleep 3600"
-export PATH="$ROOT/target/debug:$PATH"
+UP_WRAP="$TMP/up.sh"
+cat >"$UP_WRAP" <<'EOF'
+#!/bin/sh
+mkdir -p /run/devenv-smoke-boot || exit 1
+exec sleep 3600
+EOF
+chmod +x "$UP_WRAP"
+export NEALS_UP_CMD="$UP_WRAP"
+# PATH set after build
 mkdir -p "$XDG_CONFIG_HOME/neals" "$XDG_STATE_HOME/neals" "$XDG_RUNTIME_DIR/neals"
 
 PROJ="$TMP/smoke-proj"
@@ -95,12 +106,15 @@ echo "    netns_pid=$NETNS_PID"
 echo "==> nsenter (same flags as bash/exec)"
 nsenter --user --net --preserve-credentials -t "$NETNS_PID" -- true
 
-if command -v devenv >/dev/null 2>&1; then
-  echo "==> neals exec smoke -- true"
-  neals exec smoke -- true
-else
-  echo "==> skip neals exec (no devenv on PATH)"
-fi
+echo "==> /run writable in guest mount ns (devenv needs /run/devenv-*)"
+# bash/exec only enter user+net; mount ns is required to see bwrap's tmpfs /run.
+nsenter --user --net --mount --preserve-credentials -t "$NETNS_PID" -- \
+  test -d /run/devenv-smoke-boot
+nsenter --user --net --mount --preserve-credentials -t "$NETNS_PID" -- \
+  mkdir -p /run/devenv-smoke-check
+
+# Skip `neals exec` here: UP_CMD is a stub, not devenv shell.
+echo "==> skip neals exec (stub UP_CMD)"
 
 echo "==> down"
 neals down smoke
