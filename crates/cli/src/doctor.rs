@@ -167,9 +167,9 @@ fn check_devenv() -> Check {
 
 fn check_system_daemon() -> Check {
     if Path::new(SYSTEM_DAEMON_SOCKET).exists() {
-        Check::info("system", format!("{SYSTEM_DAEMON_SOCKET} (portless :80)"))
+        Check::info("system", format!("{SYSTEM_DAEMON_SOCKET}"))
     } else {
-        Check::warn("system", "ad-hoc mode (:2015); see contrib/systemd/")
+        Check::warn("system", "ad-hoc mode; see contrib/systemd/")
     }
 }
 
@@ -177,8 +177,11 @@ fn check_http() -> Check {
     if caddy_on("127.0.0.1", 80) == Some(true) {
         return Check::ok("http", "portless");
     }
-    if caddy_on("127.0.0.1", 2015) == Some(true) {
-        return Check::warn("http", "requires port in URLs");
+    // Fallback listen is :2015, then first free above — scan a short range.
+    for port in 2015u16..2015 + 256 {
+        if caddy_on("127.0.0.1", port) == Some(true) {
+            return Check::warn("http", format!("requires :{port} in URLs"));
+        }
     }
     Check::warn("http", "Caddy not listening")
 }

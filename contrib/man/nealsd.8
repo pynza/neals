@@ -51,19 +51,23 @@ Ad-hoc / development.
 Override with
 .BR NEALS_SOCKET .
 .SH HTTP
-.TP
-System mode (\fBNEALS_MODE=system\fR)
-Listen
-.B 127.0.0.1:80
-(unit grants
-.BR CAP_NET_BIND_SERVICE ).
-.TP
-Ad-hoc
-Listen
-.B 127.0.0.1:2015
-unless
+Caddy listen preference (unless
 .B NEALS_CADDY_HTTP_ADDR
-is set.
+is set):
+.B 127.0.0.1:80
+,
+then
+.B :2015
+,
+then the first free port above
+.BR :2015 .
+System mode (
+.BR NEALS_MODE=system )
+grants
+.B CAP_NET_BIND_SERVICE
+so
+.B :80
+can succeed.
 .PP
 Caddy config and logs live under the state directory
 (typically

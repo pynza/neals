@@ -21,12 +21,18 @@ and
 .B slirp4netns
 on the host.
 .PP
-With the systemd system unit installed, Caddy listens on
+With the systemd system unit installed, Caddy prefers
 .B 127.0.0.1:80
-so browser URLs need no port. In ad-hoc mode (daemon auto-started by the CLI)
-Caddy listens on
-.B 127.0.0.1:2015
-and URLs must include that port.
+(portless URLs). If
+.B :80
+(and then
+.BR :2015 )
+are busy, it takes the next free port above
+.BR :2015 ;
+URLs must include that port. Same preference in ad-hoc mode (daemon auto-started by the CLI), though
+.B :80
+usually needs
+.BR CAP_NET_BIND_SERVICE .
 .SH OPTIONS
 .TP
 .BR \-y ", " \-\-yes

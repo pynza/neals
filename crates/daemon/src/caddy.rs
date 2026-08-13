@@ -48,7 +48,7 @@ impl CaddyManager {
         let admin_sock = runtime.join("caddy-admin.sock");
         let config_path = state.join("caddy.json");
         let log_path = state.join("caddy.log");
-        let http_addr = http_listen_addr();
+        let http_addr = http_listen_addr()?;
         let loose = std::env::var_os("NEALS_CADDY_CMD").is_some();
 
         if admin_sock.exists() {
@@ -274,24 +274,35 @@ fn caddy_command() -> (String, Vec<String>) {
     }
 }
 
-fn http_listen_addr() -> String {
+fn http_listen_addr() -> Result<String> {
     if let Ok(addr) = std::env::var("NEALS_CADDY_HTTP_ADDR") {
         if !addr.trim().is_empty() {
-            return addr;
+            return Ok(addr);
         }
     }
-    if is_system_mode() {
-        "127.0.0.1:80".into()
-    } else {
-        "127.0.0.1:2015".into()
-    }
+    Ok(format!("127.0.0.1:{}", pick_http_port()?))
 }
 
-fn is_system_mode() -> bool {
-    matches!(
-        std::env::var("NEALS_MODE").as_deref().map(str::trim),
-        Ok("system")
-    )
+/// Prefer :80 (portless), then Caddy's classic :2015, then first free above.
+fn pick_http_port() -> Result<u16> {
+    use std::net::TcpListener;
+
+    for port in [80u16, 2015] {
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return Ok(port);
+        }
+    }
+    let mut port = 2016u16;
+    for _ in 0..1024 {
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return Ok(port);
+        }
+        port = match port.checked_add(1) {
+            Some(p) => p,
+            None => break,
+        };
+    }
+    bail!("no free 127.0.0.1 port for Caddy (tried :80, :2015, then :2016+)")
 }
 
 pub fn http_port_from_addr(addr: &str) -> u16 {
@@ -492,5 +503,19 @@ mod tests {
         assert_eq!(http_port_from_addr("127.0.0.1:2015"), 2015);
         assert_eq!(https_port_from_addr("127.0.0.1:80"), 2016);
         assert_eq!(https_port_from_addr("127.0.0.1:2015"), 2016);
+    }
+
+    #[test]
+    fn pick_http_port_skips_busy_2015() {
+        use std::net::TcpListener;
+        let _hold2015 = TcpListener::bind(("127.0.0.1", 2015)).expect("hold :2015");
+        let _hold80 = TcpListener::bind(("127.0.0.1", 80)).ok();
+        let port = pick_http_port().unwrap();
+        // :2015 held; :80 held or unbindable for this process → ≥ 2016
+        assert!(
+            port >= 2016,
+            "expected fallback ≥ 2016, got {port} (held80={})",
+            _hold80.is_some()
+        );
     }
 }

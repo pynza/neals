@@ -87,8 +87,9 @@ cargo build -p neals -p nealsd
 export PATH="$PWD/target/debug:$PATH"
 ```
 
-Ad-hoc mode auto-starts `nealsd` on first use. Caddy listens on
-`127.0.0.1:2015` — URLs need the port: `http://api.demo.localhost:2015/`
+Ad-hoc mode auto-starts `nealsd` on first use. Caddy prefers `:80`, then
+`:2015`, then the next free port — URLs need the port unless Caddy got `:80`:
+`http://api.demo.localhost:2015/`
 
 ## Quick start
 
@@ -233,10 +234,10 @@ guest ports apply.
 
 | Mode | How | Listen | Browser URL |
 |------|-----|--------|-------------|
-| System | `nealsd@.service` | `127.0.0.1:80` | no port |
-| Ad-hoc | CLI auto-start / `cargo run -p nealsd` | `127.0.0.1:2015` | `:2015` |
+| System | `nealsd@.service` | prefers `:80`, else `:2015`+ | no port if `:80` |
+| Ad-hoc | CLI auto-start / `cargo run -p nealsd` | same preference (`:80` usually fails without CAP) | `:{port}` if not 80 |
 
-Set `NEALS_MODE=system` (done by the unit) for the :80 default.
+Override with `NEALS_CADDY_HTTP_ADDR` (no auto-fallback).
 
 ## Develop Neals itself
 
