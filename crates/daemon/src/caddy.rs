@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use crate::state::{BoundRoute, BoundTarget};
-use neals_common::{ensure_dir, runtime_dir, state_dir, ServiceDecl, ServiceKind};
+use neals_common::{ensure_dir, open_log, runtime_dir, state_dir, ServiceDecl, ServiceKind};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -67,11 +67,7 @@ impl CaddyManager {
             ];
         }
 
-        let log_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .with_context(|| format!("failed to open {}", log_path.display()))?;
+        let log_file = open_log(&log_path)?;
         let log_err = log_file.try_clone()?;
 
         let mut cmd = Command::new(&program);
@@ -146,13 +142,12 @@ impl CaddyManager {
 
     pub async fn shutdown(&mut self) {
         if let Some(mut child) = self.child.take() {
-            if let Some(pid) = child.id() {
-                let _ = Command::new("kill")
-                    .args(["-TERM", &format!("-{pid}")])
-                    .status()
-                    .await;
+            match child.id() {
+                Some(pid) => crate::state::stop_process_group(pid, &mut child).await,
+                None => {
+                    let _ = child.wait().await;
+                }
             }
-            let _ = child.wait().await;
         }
         if !self.admin_sock.as_os_str().is_empty() {
             let _ = tokio::fs::remove_file(&self.admin_sock).await;

@@ -1,9 +1,8 @@
 use anyhow::{bail, Context, Result};
 use neals_common::{
-    call_daemon, daemon_socket, ensure_dir, is_system_daemon_socket, state_dir, Request, Response,
-    SYSTEM_DAEMON_SOCKET,
+    call_daemon, daemon_socket, ensure_dir, is_system_daemon_socket, open_log, state_dir, Request,
+    Response, SYSTEM_DAEMON_SOCKET,
 };
-use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -53,11 +52,7 @@ fn ping_ok() -> bool {
 fn start_nealsd() -> Result<()> {
     let bin = find_nealsd();
     let log_path = nealsd_log_path()?;
-    let log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .with_context(|| format!("failed to open {}", log_path.display()))?;
+    let log = open_log(&log_path)?;
     let log_err = log
         .try_clone()
         .context("failed to clone nealsd log handle")?;

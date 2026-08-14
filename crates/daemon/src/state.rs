@@ -2,13 +2,14 @@ use crate::caddy::CaddyManager;
 use crate::netns::SlirpHandle;
 use crate::ports::PortLeases;
 use neals_common::ProjectRuntime;
+use nix::errno::Errno;
+use nix::sys::signal::{killpg, Signal};
+use nix::unistd::Pid;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 use tokio::process::Child;
-use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
-use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoundTarget {
@@ -95,8 +96,8 @@ pub struct RunningProject {
     pub bound: Vec<BoundRoute>,
     pub project_path: PathBuf,
     pub slirp: SlirpHandle,
-    pub cancel: CancellationToken,
-    pub _proxy_tasks: Vec<JoinHandle<()>>,
+    // Killed on drop, which frees the host ports they listen on.
+    pub _proxy_helpers: Vec<Child>,
 }
 
 pub struct AppState {
@@ -167,7 +168,6 @@ impl AppState {
     }
 
     pub async fn finish_cleanup(&mut self, running: &RunningProject) {
-        running.cancel.cancel();
         running.slirp.stop().await;
         for route in &running.bound {
             if let Some(port) = route.tcp_port() {
@@ -185,7 +185,6 @@ impl AppState {
         let Some(mut running) = self.projects.remove(name) else {
             return Err(format!("project `{name}` is not running"));
         };
-        running.cancel.cancel();
         stop_process_group(running.pid, &mut running.child).await;
         self.finish_cleanup(&running).await;
         Ok(())
@@ -222,18 +221,78 @@ impl AppState {
     }
 }
 
-async fn stop_process_group(pid: u32, child: &mut Child) {
-    let _ = tokio::process::Command::new("kill")
-        .args(["-TERM", &format!("-{pid}")])
-        .status()
-        .await;
+/// Signal the whole group led by `pid`: bwrap is its group leader (`process_group(0)` at
+/// spawn), so this reaches every devenv child too.
+///
+/// Must not shell out to `kill`: procps swallows a leading `-pid` as an option and sends
+/// nothing, which used to leave the entire project tree running after `neals down`.
+fn signal_group(pid: u32, signal: Signal) {
+    // A pgid of 0 means nealsd's own group and 1 means init's; never derive either from a pid.
+    let pgid = match i32::try_from(pid) {
+        Ok(pgid) if pgid > 1 => pgid,
+        _ => {
+            eprintln!("refusing to signal process group {pid}");
+            return;
+        }
+    };
+    match killpg(Pid::from_raw(pgid), signal) {
+        Ok(()) | Err(Errno::ESRCH) => {}
+        Err(err) => eprintln!("killpg({pgid}, {signal:?}): {err}"),
+    }
+}
+
+pub(crate) async fn stop_process_group(pid: u32, child: &mut Child) {
+    signal_group(pid, Signal::SIGTERM);
     if timeout(Duration::from_secs(2), child.wait()).await.is_ok() {
         return;
     }
+    signal_group(pid, Signal::SIGKILL);
+    // Covers the case where the group kill missed bwrap itself.
     let _ = child.start_kill();
-    let _ = tokio::process::Command::new("kill")
-        .args(["-KILL", &format!("-{pid}")])
-        .status()
-        .await;
     let _ = timeout(Duration::from_secs(2), child.wait()).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    fn alive(pid: u32) -> bool {
+        std::path::Path::new(&format!("/proc/{pid}")).exists()
+    }
+
+    /// Guards the bug that made `neals down` a no-op: shelling out to `kill -TERM -<pid>` let
+    /// procps eat the negative pid as an option, so the project tree kept running.
+    #[tokio::test]
+    async fn stop_process_group_reaches_grandchildren() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c")
+            .arg("sleep 300 & echo $!; wait")
+            .stdout(std::process::Stdio::piped());
+        cmd.process_group(0);
+
+        let mut child = cmd.spawn().expect("spawn sh");
+        let pid = child.id().expect("sh pid");
+        let mut lines = BufReader::new(child.stdout.take().expect("stdout")).lines();
+        let grandchild: u32 = lines
+            .next_line()
+            .await
+            .expect("read pid")
+            .expect("pid line")
+            .trim()
+            .parse()
+            .expect("parse pid");
+        assert!(alive(grandchild), "grandchild should start alive");
+
+        stop_process_group(pid, &mut child).await;
+
+        for _ in 0..40 {
+            if !alive(grandchild) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        signal_group(grandchild, Signal::SIGKILL);
+        panic!("grandchild {grandchild} survived stop_process_group");
+    }
 }

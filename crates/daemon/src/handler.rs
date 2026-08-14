@@ -1,16 +1,15 @@
 use crate::caddy::{ensure_neals_symlinks, project_runtime_dir};
 use crate::netns::{self, bwrap_command, require_tools, start_proxies, wait_netns_pid};
-use crate::state::{AppState, BoundRoute, BoundTarget, RunningProject};
+use crate::state::{stop_process_group, AppState, BoundRoute, BoundTarget, RunningProject};
 use neals_common::{
-    ensure_dir, env_port_var, read_neals_services, state_dir, Registry, Request, Response,
-    ServiceDecl, ServiceKind,
+    ensure_dir, env_port_var, open_log, read_neals_services, state_dir, Registry, Request,
+    Response, ServiceDecl, ServiceKind,
 };
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
 
 pub async fn handle_request(request: Request, state: &Arc<Mutex<AppState>>) -> Response {
     match request {
@@ -88,11 +87,7 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
     }
 
     let log_path = project_log_path(name).map_err(|e| e.to_string())?;
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|e| format!("failed to open log {}: {e}", log_path.display()))?;
+    let log_file = open_log(&log_path).map_err(|e| e.to_string())?;
     let log_err = log_file
         .try_clone()
         .map_err(|e| format!("failed to clone log handle: {e}"))?;
@@ -163,7 +158,7 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
     let netns_pid = match wait_netns_pid(pid).await {
         Ok(p) => p,
         Err(e) => {
-            stop_spawned(pid, &mut child).await;
+            stop_process_group(pid, &mut child).await;
             let mut state = state.lock().await;
             release_bound_ports(&mut state, &bound);
             let snapshot = state.proxy_snapshot();
@@ -175,7 +170,7 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
     let slirp = match netns::start_slirp(netns_pid).await {
         Ok(handle) => handle,
         Err(e) => {
-            stop_spawned(pid, &mut child).await;
+            stop_process_group(pid, &mut child).await;
             let mut state = state.lock().await;
             release_bound_ports(&mut state, &bound);
             let snapshot = state.proxy_snapshot();
@@ -184,14 +179,23 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
         }
     };
 
-    let cancel = CancellationToken::new();
-    let proxy_tasks = start_proxies(&bound, netns_pid, &cancel);
+    let proxy_helpers = match start_proxies(&bound, netns_pid) {
+        Ok(helpers) => helpers,
+        Err(e) => {
+            slirp.stop().await;
+            stop_process_group(pid, &mut child).await;
+            let mut state = state.lock().await;
+            release_bound_ports(&mut state, &bound);
+            let snapshot = state.proxy_snapshot();
+            let _ = state.caddy.apply_routes(&snapshot).await;
+            return Err(format!("{e:#}"));
+        }
+    };
 
     let mut state = state.lock().await;
     if state.is_running(name) {
-        cancel.cancel();
         slirp.stop().await;
-        stop_spawned(pid, &mut child).await;
+        stop_process_group(pid, &mut child).await;
         release_bound_ports(&mut state, &bound);
         let snapshot = state.proxy_snapshot();
         let _ = state.caddy.apply_routes(&snapshot).await;
@@ -208,8 +212,7 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
             bound,
             project_path: project.path,
             slirp,
-            cancel,
-            _proxy_tasks: proxy_tasks,
+            _proxy_helpers: proxy_helpers,
         },
     );
     Ok(())
@@ -297,12 +300,4 @@ fn up_command() -> (String, Vec<String>) {
         }
         _ => ("devenv".into(), vec!["up".into()]),
     }
-}
-
-async fn stop_spawned(pid: u32, child: &mut tokio::process::Child) {
-    let _ = tokio::process::Command::new("kill")
-        .args(["-TERM", &format!("-{pid}")])
-        .status()
-        .await;
-    let _ = child.wait().await;
 }

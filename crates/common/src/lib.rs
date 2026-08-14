@@ -16,6 +16,6 @@ pub use ipc::{
 };
 pub use registry::{Project, Registry};
 pub use xdg::{
-    config_dir, daemon_socket, ensure_dir, is_system_daemon_socket, projects_file, runtime_dir,
-    state_dir, SYSTEM_DAEMON_SOCKET,
+    config_dir, daemon_socket, ensure_dir, is_system_daemon_socket, open_log, projects_file,
+    runtime_dir, state_dir, LOG_MAX_BYTES, SYSTEM_DAEMON_SOCKET,
 };

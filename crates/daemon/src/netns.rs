@@ -1,22 +1,19 @@
 //! Per-project netns: bwrap + outbound slirp + host→guest TCP via setns.
 
-use crate::state::BoundRoute;
+use crate::state::{BoundRoute, BoundTarget};
 use anyhow::{bail, Context, Result};
 use nix::libc;
 use nix::sched::{setns, CloneFlags};
 use std::fs::File;
-use std::net::SocketAddr;
-use std::os::fd::AsFd;
+use std::io::ErrorKind;
+use std::net::{Shutdown, SocketAddr};
+use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::copy_bidirectional;
-use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
-use tokio::task::JoinHandle;
 use tokio::time::sleep;
-use tokio_util::sync::CancellationToken;
 
 pub fn require_tools() -> Result<()> {
     for bin in ["bwrap", "slirp4netns"] {
@@ -197,65 +194,49 @@ pub async fn start_slirp(netns_pid: u32) -> Result<SlirpHandle> {
     Ok(SlirpHandle { child })
 }
 
-pub fn spawn_port_proxy(
-    host_port: u16,
-    guest_port: u16,
-    netns_pid: u32,
-    cancel: CancellationToken,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let listener = match TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], host_port))).await
-        {
-            Ok(l) => l,
-            Err(err) => {
-                eprintln!("nealsd: bind 127.0.0.1:{host_port}: {err}");
-                return;
-            }
+/// argv[1] of the per-route proxy helper (see `start_proxies`).
+pub const PROXY_MODE_ARG: &str = "--netns-proxy";
+
+/// Start one helper process per proxied TCP route.
+///
+/// The helper has to be a *process*: reaching a service bound to the guest's loopback means
+/// entering the project's user namespace first, and the kernel rejects `setns(CLONE_NEWUSER)`
+/// from a multi-threaded caller — which nealsd, running a multi-threaded tokio runtime, always
+/// is. Each helper inherits its already-bound host listener as stdin; a socket keeps the netns
+/// it was created in, so the helper still accepts host connections after moving into the guest.
+pub fn start_proxies(bound: &[BoundRoute], netns_pid: u32) -> Result<Vec<Child>> {
+    let exe = std::env::current_exe().context("failed to locate the nealsd binary")?;
+    let mut helpers = Vec::new();
+    for route in bound {
+        let BoundTarget::Tcp {
+            host_port,
+            guest_port,
+        } = route.target
+        else {
+            continue;
         };
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled() => break,
-                accepted = listener.accept() => {
-                    let Ok((client, _)) = accepted else { break };
-                    let cancel_conn = cancel.clone();
-                    tokio::spawn(async move {
-                        if let Err(err) = proxy_one(client, guest_port, netns_pid, cancel_conn).await {
-                            eprintln!("nealsd: proxy :{host_port}→guest:{guest_port}: {err:#}");
-                        }
-                    });
-                }
-            }
-        }
-    })
-}
-
-async fn proxy_one(
-    mut client: TcpStream,
-    guest_port: u16,
-    netns_pid: u32,
-    cancel: CancellationToken,
-) -> Result<()> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(connect_in_netns(netns_pid, guest_port));
-    });
-    let std_stream = rx.await.context("connect thread dropped")??;
-
-    std_stream
-        .set_nonblocking(true)
-        .context("set_nonblocking")?;
-    let mut guest = TcpStream::from_std(std_stream).context("from_std")?;
-
-    tokio::select! {
-        _ = cancel.cancelled() => Ok(()),
-        res = copy_bidirectional(&mut client, &mut guest) => {
-            res.context("copy_bidirectional")?;
-            Ok(())
-        }
+        let listener = std::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], host_port)))
+            .with_context(|| format!("bind 127.0.0.1:{host_port}"))?;
+        let child = Command::new(&exe)
+            .args([
+                PROXY_MODE_ARG,
+                &netns_pid.to_string(),
+                &guest_port.to_string(),
+            ])
+            .stdin(Stdio::from(OwnedFd::from(listener)))
+            .stdout(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .with_context(|| format!("spawn netns proxy for 127.0.0.1:{host_port}"))?;
+        helpers.push(child);
     }
+    Ok(helpers)
 }
 
-fn connect_in_netns(netns_pid: u32, guest_port: u16) -> Result<std::net::TcpStream> {
+/// Body of `nealsd --netns-proxy <netns_pid> <guest_port>`, with the host listener on stdin.
+///
+/// Must run before anything spawns a thread, otherwise the `setns` below fails with EINVAL.
+pub fn run_proxy_helper(netns_pid: u32, guest_port: u16) -> Result<()> {
     // userns then netns — required for rootless setns.
     let userns = File::open(format!("/proc/{netns_pid}/ns/user"))
         .with_context(|| format!("open userns of pid {netns_pid}"))?;
@@ -263,30 +244,46 @@ fn connect_in_netns(netns_pid: u32, guest_port: u16) -> Result<std::net::TcpStre
         .with_context(|| format!("open netns of pid {netns_pid}"))?;
     setns(userns.as_fd(), CloneFlags::CLONE_NEWUSER).context("setns CLONE_NEWUSER")?;
     setns(netns.as_fd(), CloneFlags::CLONE_NEWNET).context("setns CLONE_NEWNET")?;
-    std::net::TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], guest_port)))
-        .with_context(|| format!("connect 127.0.0.1:{guest_port} in netns"))
+
+    let listener = unsafe { std::net::TcpListener::from_raw_fd(0) };
+    let guest = SocketAddr::from(([127, 0, 0, 1], guest_port));
+    loop {
+        match listener.accept() {
+            // ponytail: two threads per connection. Fine for a dev box; if it ever matters,
+            // swap the helper body for a small single-threaded poll loop.
+            Ok((client, _)) => {
+                std::thread::spawn(move || {
+                    if let Err(err) = splice(client, guest) {
+                        eprintln!("nealsd: netns proxy → {guest}: {err:#}");
+                    }
+                });
+            }
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    ErrorKind::Interrupted | ErrorKind::ConnectionAborted
+                ) => {}
+            // Anything else (a bad stdin, fd exhaustion) would spin here forever; let nealsd
+            // see the helper die instead.
+            Err(err) => return Err(err).context("accept on the inherited host listener"),
+        }
+    }
 }
 
-pub fn start_proxies(
-    bound: &[BoundRoute],
-    netns_pid: u32,
-    cancel: &CancellationToken,
-) -> Vec<JoinHandle<()>> {
-    bound
-        .iter()
-        .filter_map(|r| match r.target {
-            crate::state::BoundTarget::Tcp {
-                host_port,
-                guest_port,
-            } => Some(spawn_port_proxy(
-                host_port,
-                guest_port,
-                netns_pid,
-                cancel.clone(),
-            )),
-            _ => None,
-        })
-        .collect()
+fn splice(client: std::net::TcpStream, guest: SocketAddr) -> Result<()> {
+    let server =
+        std::net::TcpStream::connect(guest).with_context(|| format!("connect {guest} in netns"))?;
+    let mut client_read = client.try_clone().context("clone client socket")?;
+    let mut server_write = server.try_clone().context("clone guest socket")?;
+    let upstream = std::thread::spawn(move || {
+        let _ = std::io::copy(&mut client_read, &mut server_write);
+        let _ = server_write.shutdown(Shutdown::Write);
+    });
+    let (mut server_read, mut client_write) = (server, client);
+    let _ = std::io::copy(&mut server_read, &mut client_write);
+    let _ = client_write.shutdown(Shutdown::Write);
+    let _ = upstream.join();
+    Ok(())
 }
 
 // Inner pid (bwrap itself stays on the host netns).

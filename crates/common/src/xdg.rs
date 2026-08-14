@@ -85,6 +85,25 @@ pub fn ensure_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
+pub const LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+// ponytail: one backup generation, and the size is only checked here, so a single long-lived
+// writer can still grow one file past the cap. Upgrade path: logrotate on ~/.local/state/neals.
+/// Open a log file for appending, first moving it aside to `<path>.1` once it grew past
+/// `LOG_MAX_BYTES`. Writers already holding the old file keep writing to the rotated inode.
+pub fn open_log(path: &Path) -> Result<fs::File> {
+    if fs::metadata(path).is_ok_and(|m| m.len() > LOG_MAX_BYTES) {
+        let mut rotated = path.as_os_str().to_os_string();
+        rotated.push(".1");
+        let _ = fs::rename(path, PathBuf::from(rotated));
+    }
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open {}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,6 +162,32 @@ mod tests {
             daemon_socket_with(None, true, runtime),
             PathBuf::from(SYSTEM_DAEMON_SOCKET)
         );
+    }
+
+    #[test]
+    fn open_log_rotates_only_past_the_cap() {
+        let tmp = std::env::temp_dir().join(format!("neals-log-{}", std::process::id()));
+        ensure_dir(&tmp).unwrap();
+        let path = tmp.join("demo.log");
+        let rotated = tmp.join("demo.log.1");
+
+        // Under the cap: same file, existing lines kept.
+        fs::write(&path, b"first\n").unwrap();
+        drop(open_log(&path).unwrap());
+        assert!(!rotated.exists());
+        assert_eq!(fs::read(&path).unwrap(), b"first\n");
+
+        // Over the cap: moved aside and reopened empty.
+        fs::write(&path, vec![b'x'; (LOG_MAX_BYTES + 1) as usize]).unwrap();
+        drop(open_log(&path).unwrap());
+        assert_eq!(fs::metadata(&path).unwrap().len(), 0);
+        assert_eq!(
+            fs::metadata(&rotated).unwrap().len(),
+            LOG_MAX_BYTES + 1,
+            "previous log should survive as .1"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]
