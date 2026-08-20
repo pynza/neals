@@ -64,6 +64,14 @@ if [[ "$exit_dpkg" -ne 0 ]]; then
   fi
 fi
 
+if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+  unit="nealsd@${USER}"
+  if systemctl is-active --quiet "$unit"; then
+    echo "==> restart $unit (pick up new binary)"
+    sudo systemctl restart "$unit"
+  fi
+fi
+
 echo "==> which neals: $(command -v neals || echo 'not on PATH')"
 neals -V || true
 echo "done. same as a release .deb; remove with: sudo apt remove neals  (or dpkg -P neals)"

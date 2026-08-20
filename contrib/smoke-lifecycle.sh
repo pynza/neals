@@ -104,10 +104,9 @@ echo "    netns_pid=$NETNS_PID"
 [[ "$NETNS_PID" -gt 1 ]]
 
 echo "==> nsenter (same flags as bash/exec)"
-nsenter --user --net --preserve-credentials -t "$NETNS_PID" -- true
+nsenter --user --net --mount --preserve-credentials -t "$NETNS_PID" -- true
 
 echo "==> /run writable in guest mount ns (devenv needs /run/devenv-*)"
-# bash/exec only enter user+net; mount ns is required to see bwrap's tmpfs /run.
 nsenter --user --net --mount --preserve-credentials -t "$NETNS_PID" -- \
   test -d /run/devenv-smoke-boot
 nsenter --user --net --mount --preserve-credentials -t "$NETNS_PID" -- \

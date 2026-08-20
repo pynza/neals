@@ -232,8 +232,8 @@ Public URL shape (proxy services only):
 `http://{service}.{project}.localhost[:caddy-port]/`.
 
 From the host, connect to the **host** port (e.g. `redis-cli -p 6380`).
-`neals bash` / `neals exec` enter the project netns, so inside the shell the
-guest ports apply.
+`neals bash` / `neals exec` enter the project's user, net, and mount namespaces,
+so inside the shell the guest ports, DNS, and `/run` apply.
 ## HTTP modes
 
 | Mode | How | Listen | Browser URL |

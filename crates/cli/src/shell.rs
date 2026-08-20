@@ -167,6 +167,7 @@ fn nsenter_devenv(
     cmd.args([
         "--user",
         "--net",
+        "--mount",
         "--preserve-credentials",
         "-t",
         &netns_pid.to_string(),

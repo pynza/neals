@@ -101,7 +101,15 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
             return Err(format!("runtime dir: {e:#}"));
         }
     };
-    let mut cmd = bwrap_command(&program, &args, &project.path, &runtime_root);
+    let resolv_conf = match netns::write_resolv_conf(&runtime_proj) {
+        Ok(p) => p,
+        Err(e) => {
+            let mut state = state.lock().await;
+            release_bound_ports(&mut state, &bound);
+            return Err(format!("resolv.conf: {e:#}"));
+        }
+    };
+    let mut cmd = bwrap_command(&program, &args, &project.path, &runtime_root, &resolv_conf);
     cmd.env("NEALS_RUNTIME", &runtime_proj)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log_file))

@@ -39,14 +39,31 @@ fn which(bin: &str) -> Option<PathBuf> {
     })
 }
 
+/// slirp4netns' built-in resolver (`--configure` puts it at this address).
+const SLIRP_RESOLV_CONF: &str = "nameserver 10.0.2.3\n";
+
+/// Write the guest's `resolv.conf`; bind it in via [`bwrap_command`].
+///
+/// The host's own nameserver is unusable inside the netns: with systemd-resolved it is
+/// `127.0.0.53`, a different loopback in there, and `--disable-host-loopback` blocks the
+/// host's anyway. slirp forwards for us instead.
+pub fn write_resolv_conf(dir: &Path) -> Result<PathBuf> {
+    let path = dir.join("resolv.conf");
+    std::fs::write(&path, SLIRP_RESOLV_CONF)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(path)
+}
+
 // bwrap user+net ns; brings `lo` up inside.
 // `runtime_neals` is host `$XDG_RUNTIME_DIR/neals` (or `/run/neals`); remounted after a
 // writable tmpfs /run so devenv can create `/run/devenv-*`.
+// `resolv_conf` comes from [`write_resolv_conf`].
 pub fn bwrap_command(
     program: &str,
     args: &[String],
     project_dir: &Path,
     runtime_neals: &Path,
+    resolv_conf: &Path,
 ) -> Command {
     let uid = nix::unistd::getuid();
     let gid = nix::unistd::getgid();
@@ -71,6 +88,8 @@ pub fn bwrap_command(
             "/",
         ]);
     mount_writable_run(&mut cmd, runtime_neals);
+    mount_session_runtime(&mut cmd, uid);
+    mount_resolv_conf(&mut cmd, resolv_conf);
     cmd.arg("--chdir")
         .arg(project_dir)
         .args(["--", "/bin/sh", "-c"])
@@ -95,6 +114,42 @@ fn mount_writable_run(cmd: &mut Command, runtime_neals: &Path) {
         }
     }
     cmd.arg("--bind").arg(runtime_neals).arg(runtime_neals);
+}
+
+/// Keep `$XDG_RUNTIME_DIR` (`/run/user/<uid>`) so `neals bash` still sees ssh-agent /
+/// dbus after entering the guest mount ns. systemd nealsd sets `XDG_RUNTIME_DIR=/run`,
+/// so look up the session dir by uid, not from the daemon's env.
+fn mount_session_runtime(cmd: &mut Command, uid: nix::unistd::Uid) {
+    let session = PathBuf::from(format!("/run/user/{uid}"));
+    if !session.is_dir() {
+        return;
+    }
+    cmd.arg("--dir").arg("/run/user");
+    cmd.arg("--bind").arg(&session).arg(&session);
+}
+
+/// Point the guest's resolver at slirp. Must run after [`mount_writable_run`], or the
+/// tmpfs hides the bind again.
+///
+/// `/etc/resolv.conf` is usually a symlink into `/run` (systemd-resolved), whose target
+/// that tmpfs wipes, so the bind lands on the resolved path with its parents recreated
+/// inside the tmpfs.
+fn mount_resolv_conf(cmd: &mut Command, resolv_conf: &Path) {
+    // Missing or dangling on the host: leave DNS alone, bwrap cannot create the file
+    // under the host's root-owned /etc.
+    let Ok(dest) = std::fs::canonicalize("/etc/resolv.conf") else {
+        return;
+    };
+    if let Ok(rel) = dest.strip_prefix("/run") {
+        let mut acc = PathBuf::from("/run");
+        for c in rel.components() {
+            acc.push(c);
+            if acc.as_path() != dest {
+                cmd.arg("--dir").arg(&acc);
+            }
+        }
+    }
+    cmd.arg("--ro-bind").arg(resolv_conf).arg(&dest);
 }
 
 fn clear_caps_for_userns() -> std::io::Result<()> {
@@ -345,4 +400,48 @@ pub fn userns_works() -> bool {
         cmd.pre_exec(clear_caps_for_userns);
     }
     cmd.status().map(|s| s.success()).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Binding the guest resolver before `--tmpfs /run` would silently hide it again,
+    /// which is exactly how DNS broke inside the netns.
+    #[test]
+    fn resolv_conf_is_bound_after_the_run_tmpfs() {
+        if std::fs::canonicalize("/etc/resolv.conf").is_err() {
+            return; // no host resolver to shadow
+        }
+        let resolv = Path::new("/run/neals/demo/resolv.conf");
+        let cmd = bwrap_command("true", &[], Path::new("/tmp"), Path::new("/run/neals"), resolv);
+        let argv: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        let tmpfs = argv
+            .windows(2)
+            .position(|w| w == ["--tmpfs", "/run"])
+            .expect("bwrap should mount a writable tmpfs on /run");
+        let bind = argv
+            .windows(2)
+            .position(|w| w[0] == "--ro-bind" && w[1] == resolv.to_string_lossy())
+            .expect("bwrap should bind the generated resolv.conf");
+        assert!(bind > tmpfs, "resolv.conf bound before the tmpfs: {argv:?}");
+
+        let uid = nix::unistd::getuid();
+        let session = format!("/run/user/{uid}");
+        if Path::new(&session).is_dir() {
+            let session_bind = argv
+                .windows(2)
+                .position(|w| w[0] == "--bind" && w[1] == session)
+                .expect("bwrap should bind the session /run/user/<uid>");
+            assert!(
+                session_bind > tmpfs,
+                "session runtime bound before the tmpfs: {argv:?}"
+            );
+        }
+    }
 }
