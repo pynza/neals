@@ -6,7 +6,8 @@
 #   ./contrib/packaging/package-linux.sh [VERSION] [TARGET]
 # TARGET defaults to host triple (x86_64-unknown-linux-gnu or aarch64-unknown-linux-gnu).
 # Set CLEAR_DIST=1 to wipe ./dist first (default: keep other arch artifacts).
-# Requires: cargo, dpkg-deb, zip; nfpm (downloaded automatically if missing).
+# Set DEB_ONLY=1 to skip archives, .rpm, and checksums (local install loop).
+# Requires: cargo, dpkg-deb; zip + nfpm unless DEB_ONLY=1.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -154,12 +155,14 @@ System daemon (portless *.localhost on :80):
 Requires at runtime: Linux + systemd, nix, devenv, caddy on PATH
 EOF
 
-echo "==> archives"
-tar -C "$DIST" -czf "$DIST/${BASE}.tar.gz" "$BASE"
-(
-  cd "$DIST"
-  zip -qr "${BASE}.zip" "$BASE"
-)
+if [[ "${DEB_ONLY:-0}" != "1" ]]; then
+  echo "==> archives"
+  tar -C "$DIST" -czf "$DIST/${BASE}.tar.gz" "$BASE"
+  (
+    cd "$DIST"
+    zip -qr "${BASE}.zip" "$BASE"
+  )
+fi
 
 echo "==> stage /usr tree"
 mkdir -p \
@@ -233,10 +236,11 @@ chmod 644 "$PKG/DEBIAN/control"
 
 dpkg-deb --root-owner-group --build "$PKG" "$DIST/${NAME}_${VERSION}_${ARCH_DEB}.deb"
 
-echo "==> .rpm ($ARCH_RPM)"
-ensure_nfpm
-NFPM_CFG="$PKG_ROOT/nfpm.yaml"
-cat >"$NFPM_CFG" <<EOF
+if [[ "${DEB_ONLY:-0}" != "1" ]]; then
+  echo "==> .rpm ($ARCH_RPM)"
+  ensure_nfpm
+  NFPM_CFG="$PKG_ROOT/nfpm.yaml"
+  cat >"$NFPM_CFG" <<EOF
 name: ${NAME}
 arch: ${ARCH_RPM}
 platform: linux
@@ -269,17 +273,20 @@ scripts:
   postremove: ${ROOT}/contrib/packaging/deb/postrm
 EOF
 
-"$NFPM_BIN" package -f "$NFPM_CFG" -p rpm -t "$DIST/${NAME}-${VERSION}-1.${ARCH_RPM}.rpm"
+  "$NFPM_BIN" package -f "$NFPM_CFG" -p rpm -t "$DIST/${NAME}-${VERSION}-1.${ARCH_RPM}.rpm"
+fi
 
 rm -rf "$STAGE" "$PKG_ROOT"
 
-echo "==> checksums (all files currently in dist/)"
-(
-  cd "$DIST"
-  rm -f SHA256SUMS
-  # Ignore helper dirs/binaries used only during packaging.
-  find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\n' | sort | xargs -r sha256sum >SHA256SUMS
-)
+if [[ "${DEB_ONLY:-0}" != "1" ]]; then
+  echo "==> checksums (all files currently in dist/)"
+  (
+    cd "$DIST"
+    rm -f SHA256SUMS
+    # Ignore helper dirs/binaries used only during packaging.
+    find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\n' | sort | xargs -r sha256sum >SHA256SUMS
+  )
+fi
 
 echo "==> done ($TARGET)"
 ls -lh "$DIST"

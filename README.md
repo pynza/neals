@@ -49,6 +49,10 @@ sudo dpkg -P neals          # purge
 sudo rpm -e neals
 ```
 
+From this tree (no GitHub Release): `./contrib/packaging/install-local.sh`
+builds a host-arch `.deb` and `dpkg -i`s it (`--reinstall` equivalent, same
+`/usr` layout and postinst). Skip daemon setup with `NEALS_DEB_SETUP=0`.
+
 Unit details: [contrib/systemd/README.md](contrib/systemd/README.md).
 
 ### Manual install (Arch / tarball / from source)
@@ -271,4 +275,6 @@ Local package smoke test (host arch → `./dist`):
 
 ```bash
 CLEAR_DIST=1 ./contrib/packaging/package-linux.sh 0.1.0
+# .deb only (faster): DEB_ONLY=1 ./contrib/packaging/package-linux.sh
+# build + install like a release: ./contrib/packaging/install-local.sh
 ```
