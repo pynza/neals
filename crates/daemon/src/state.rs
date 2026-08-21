@@ -3,10 +3,10 @@ use crate::netns::SlirpHandle;
 use crate::ports::PortLeases;
 use neals_common::ProjectRuntime;
 use nix::errno::Errno;
-use nix::sys::signal::{killpg, Signal};
+use nix::sys::signal::{kill, killpg, Signal};
 use nix::unistd::Pid;
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tokio::process::Child;
 use tokio::time::{timeout, Duration};
@@ -168,6 +168,9 @@ impl AppState {
     }
 
     pub async fn finish_cleanup(&mut self, running: &RunningProject) {
+        if let Ok(runtime) = crate::caddy::project_runtime_dir(&running.name) {
+            sweep_project_processes(&runtime).await;
+        }
         running.slirp.stop().await;
         for route in &running.bound {
             if let Some(port) = route.tcp_port() {
@@ -241,15 +244,144 @@ fn signal_group(pid: u32, signal: Signal) {
     }
 }
 
-pub(crate) async fn stop_process_group(pid: u32, child: &mut Child) {
-    signal_group(pid, Signal::SIGTERM);
-    if timeout(Duration::from_secs(2), child.wait()).await.is_ok() {
+fn signal_pid(pid: u32, signal: Signal) {
+    if pid <= 1 {
         return;
     }
-    signal_group(pid, Signal::SIGKILL);
-    // Covers the case where the group kill missed bwrap itself.
-    let _ = child.start_kill();
-    let _ = timeout(Duration::from_secs(2), child.wait()).await;
+    match kill(Pid::from_raw(pid as i32), signal) {
+        Ok(()) | Err(Errno::ESRCH) => {}
+        Err(err) => eprintln!("kill({pid}, {signal:?}): {err}"),
+    }
+}
+
+fn signal_pids(pids: &[u32], signal: Signal) {
+    for &pid in pids {
+        signal_pid(pid, signal);
+    }
+}
+
+fn pid_alive(pid: u32) -> bool {
+    Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// Every descendant of `root`, discovered via `/proc/<pid>/task/<pid>/children`.
+///
+/// devenv calls `setsid()` on each task process, so the leaves (mariadbd, npm, …) sit in
+/// their own sessions and a group kill never reaches them — they used to survive `down`
+/// as orphans and keep the mysql datadir locked. Must run while the tree is still alive.
+fn collect_descendants(root: u32) -> Vec<u32> {
+    let mut descendants = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::from([root]);
+    let mut queue = vec![root];
+    while let Some(pid) = queue.pop() {
+        let Ok(raw) = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")) else {
+            continue;
+        };
+        for token in raw.split_whitespace() {
+            if let Ok(child) = token.parse::<u32>() {
+                if seen.insert(child) {
+                    descendants.push(child);
+                    queue.push(child);
+                }
+            }
+        }
+    }
+    descendants
+}
+
+/// Block until every pid in `pids` is gone, then return the survivors.
+async fn wait_pids_gone(pids: &[u32], deadline: Duration) -> Vec<u32> {
+    let mut alive: Vec<u32> = pids.to_vec();
+    let start = Instant::now();
+    while !alive.is_empty() && start.elapsed() < deadline {
+        alive.retain(|pid| pid_alive(*pid));
+        if !alive.is_empty() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    alive
+}
+
+/// Last-resort sweep after the tree kill: devenv's supervisor restarts TERMed tasks
+/// under fresh pids (escaping the /proc snapshot), and its setsid'd leaves reparent to
+/// systemd --user when it dies. Every project process inherits NEALS_RUNTIME from bwrap,
+/// so hunt survivors by environment instead of by ancestry.
+fn find_stragglers(runtime: &Path) -> Vec<u32> {
+    let marker = format!("NEALS_RUNTIME={}", runtime.display());
+    let mut hits = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return hits;
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid <= 1 {
+            continue;
+        }
+        let Ok(env) = std::fs::read(format!("/proc/{pid}/environ")) else {
+            continue;
+        };
+        if env
+            .split(|b| *b == 0)
+            .any(|chunk| chunk == marker.as_bytes())
+        {
+            hits.push(pid);
+        }
+    }
+    hits
+}
+
+async fn sweep_project_processes(runtime: &Path) {
+    let strays = find_stragglers(runtime);
+    if strays.is_empty() {
+        return;
+    }
+    eprintln!(
+        "sweeping {} stray process(es) still carrying NEALS_RUNTIME={}",
+        strays.len(),
+        runtime.display()
+    );
+    signal_pids(&strays, Signal::SIGTERM);
+    let alive = wait_pids_gone(&strays, Duration::from_secs(2)).await;
+    if !alive.is_empty() {
+        signal_pids(&alive, Signal::SIGKILL);
+        let _ = wait_pids_gone(&alive, Duration::from_secs(2)).await;
+    }
+}
+
+pub(crate) async fn stop_process_group(pid: u32, child: &mut Child) {
+    // Snapshot before signaling: devenv's setsid'd leaves are invisible to killpg.
+    let marked = collect_descendants(pid);
+    signal_group(pid, Signal::SIGTERM);
+    signal_pids(&marked, Signal::SIGTERM);
+
+    if timeout(Duration::from_secs(2), child.wait()).await.is_err() {
+        // Late spawns between TERM and KILL would otherwise escape the snapshot.
+        let mut all = marked.clone();
+        all.extend(collect_descendants(pid));
+        signal_group(pid, Signal::SIGKILL);
+        signal_pids(&all, Signal::SIGKILL);
+        // Covers the case where the group kill missed bwrap itself.
+        let _ = child.start_kill();
+        let _ = timeout(Duration::from_secs(2), child.wait()).await;
+    }
+
+    // Graceful leaves (mariadbd flushing its datadir) can outlive bwrap; never report
+    // down while they still hold locks, and SIGKILL whatever refuses to finish.
+    let survivors = wait_pids_gone(&marked, Duration::from_secs(3)).await;
+    if !survivors.is_empty() {
+        eprintln!(
+            "project tree did not exit after TERM; killing {} straggler(s)",
+            survivors.len()
+        );
+        signal_pids(&survivors, Signal::SIGKILL);
+        let _ = wait_pids_gone(&survivors, Duration::from_secs(2)).await;
+    }
 }
 
 #[cfg(test)]
@@ -294,5 +426,45 @@ mod tests {
         }
         signal_group(grandchild, Signal::SIGKILL);
         panic!("grandchild {grandchild} survived stop_process_group");
+    }
+
+    /// devenv setsid()s every task process, so leaves live outside bwrap's process group
+    /// and used to survive `down` as orphans holding the mysql datadir lock.
+    #[tokio::test]
+    async fn stop_process_group_reaches_setsid_descendants() {
+        let marker = std::env::temp_dir().join(format!("neals-setsid-test-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let script = format!(
+            "setsid sh -c 'echo $$ > {}; exec sleep 300' & wait",
+            marker.display()
+        );
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg(script);
+        cmd.process_group(0);
+
+        let mut child = cmd.spawn().expect("spawn sh");
+        let pid = child.id().expect("sh pid");
+
+        // Wait for the setsid'd sleep to write its own pid (it is a session leader now).
+        let mut leaf = None;
+        for _ in 0..60 {
+            if let Ok(text) = std::fs::read_to_string(&marker) {
+                leaf = text.trim().parse::<u32>().ok();
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let leaf = leaf.expect("setsid descendant should report its pid");
+        assert!(alive(leaf), "leaf should start alive");
+        assert_ne!(
+            leaf, pid,
+            "leaf must sit in its own session for this test to bite"
+        );
+
+        stop_process_group(pid, &mut child).await;
+        assert!(
+            !alive(leaf),
+            "setsid'd leaf {leaf} survived stop_process_group"
+        );
     }
 }

@@ -68,9 +68,21 @@ pub fn run_project_exec(project: &str, path: &Path, command: &[String]) -> Resul
         bail!("no command provided");
     }
     let netns_pid = require_netns_pid(project)?;
-    let mut args: Vec<&str> = vec!["--quiet", "shell"];
-    args.extend(command.iter().map(String::as_str));
-    run_in_netns(path, project, netns_pid, &args)
+    // devenv 2.x drops flag-looking args of `shell CMD …` on the floor (`bash -c '…'`
+    // silently runs nothing), so drive a plain non-interactive bash over stdin.
+    let script = command
+        .iter()
+        .map(|arg| neals_common::shell_quote(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let status = nsenter_devenv_stdin(
+        path,
+        project,
+        netns_pid,
+        &["--quiet", "shell", "bash"],
+        &format!("{script}\n"),
+    )?;
+    Ok(exit_code_from_status(status))
 }
 
 fn require_netns_pid(project: &str) -> Result<u32> {
@@ -156,13 +168,8 @@ fn run_in_netns(dir: &Path, project: &str, netns_pid: u32, args: &[&str]) -> Res
     Ok(exit_code_from_status(status))
 }
 
-fn nsenter_devenv(
-    dir: &Path,
-    project: &str,
-    netns_pid: u32,
-    devenv_args: &[&str],
-    extra_env: &[(&str, &std::ffi::OsStr)],
-) -> Result<ExitStatus> {
+/// nsenter + devenv with the stdio wiring left to the caller.
+fn nsenter_command(dir: &Path, project: &str, netns_pid: u32) -> Command {
     let mut cmd = Command::new("nsenter");
     cmd.args([
         "--user",
@@ -171,20 +178,64 @@ fn nsenter_devenv(
         "--preserve-credentials",
         "-t",
         &netns_pid.to_string(),
+        // nsenter drops cwd to `/` across the mount-ns switch; re-enter the
+        // project dir inside the guest (`--dev-bind / /` keeps the path valid).
+        // `--wdns` resolves *after* the switch: plain `--wd` keeps the host's
+        // vfsmount, so getcwd reports `(unreachable)/…` and direnv bails with
+        // "LoadConfig() Getwd failed". Long form needs `=`: `--wdns <dir>`
+        // would treat <dir> as the program. Requires util-linux >= 2.39.
         &format!("--wdns={}", dir.display()),
+        "--",
+        "devenv",
     ])
-    .args(["--", "devenv"])
-    .args(devenv_args)
     .current_dir(dir)
-    .env("NEALS_PROJECT", project)
-    .stdin(Stdio::inherit())
-    .stdout(Stdio::inherit())
-    .stderr(Stdio::inherit());
+    .env("NEALS_PROJECT", project);
+    cmd
+}
+
+fn nsenter_devenv(
+    dir: &Path,
+    project: &str,
+    netns_pid: u32,
+    devenv_args: &[&str],
+    extra_env: &[(&str, &std::ffi::OsStr)],
+) -> Result<ExitStatus> {
+    let mut cmd = nsenter_command(dir, project, netns_pid);
+    cmd.args(devenv_args)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
     for (k, v) in extra_env {
         cmd.env(k, v);
     }
     cmd.status()
         .context("failed to run `nsenter`/`devenv` (is util-linux + devenv on PATH?)")
+}
+
+/// Feed `script` to `devenv shell bash` over stdin; output stays inherited.
+fn nsenter_devenv_stdin(
+    dir: &Path,
+    project: &str,
+    netns_pid: u32,
+    devenv_args: &[&str],
+    script: &str,
+) -> Result<ExitStatus> {
+    use std::io::Write;
+    let mut child = nsenter_command(dir, project, netns_pid)
+        .args(devenv_args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("failed to run `nsenter`/`devenv` (is util-linux + devenv on PATH?)")?;
+    child
+        .stdin
+        .take()
+        .context("devenv shell has no stdin")?
+        .write_all(script.as_bytes())
+        .context("failed to write the command into devenv shell stdin")?;
+    // Dropping stdin closes the pipe: bash runs the script and exits at EOF.
+    child.wait().context("waiting for devenv shell")
 }
 
 fn exit_code_from_status(status: ExitStatus) -> ExitCode {

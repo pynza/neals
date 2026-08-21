@@ -68,10 +68,10 @@ pub fn bwrap_command(
     let uid = nix::unistd::getuid();
     let gid = nix::unistd::getgid();
     let mut shell = String::from("ip link set lo up 2>/dev/null || true; exec ");
-    shell.push_str(&shell_quote(program));
+    shell.push_str(&neals_common::shell_quote(program));
     for a in args {
         shell.push(' ');
-        shell.push_str(&shell_quote(a));
+        shell.push_str(&neals_common::shell_quote(a));
     }
 
     let mut cmd = Command::new("bwrap");
@@ -199,17 +199,6 @@ fn clear_caps_for_userns() -> std::io::Result<()> {
     Ok(())
 }
 
-fn shell_quote(s: &str) -> String {
-    if s.is_empty() {
-        return "''".into();
-    }
-    if s.bytes()
-        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/' | b':' | b'='))
-    {
-        return s.to_string();
-    }
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
 
 pub struct SlirpHandle {
     child: Child,
