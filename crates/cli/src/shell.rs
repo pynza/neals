@@ -171,9 +171,9 @@ fn nsenter_devenv(
         "--preserve-credentials",
         "-t",
         &netns_pid.to_string(),
-        "--",
-        "devenv",
+        &format!("--wdns={}", dir.display()),
     ])
+    .args(["--", "devenv"])
     .args(devenv_args)
     .current_dir(dir)
     .env("NEALS_PROJECT", project)
