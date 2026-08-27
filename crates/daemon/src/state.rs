@@ -14,7 +14,6 @@ use tokio::time::{timeout, Duration};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoundTarget {
     Unix { socket_file: String },
-    // host_port = host/Caddy; guest_port = bind inside netns
     Tcp { host_port: u16, guest_port: u16 },
 }
 
@@ -96,7 +95,6 @@ pub struct RunningProject {
     pub bound: Vec<BoundRoute>,
     pub project_path: PathBuf,
     pub slirp: SlirpHandle,
-    // Killed on drop, which frees the host ports they listen on.
     pub _proxy_helpers: Vec<Child>,
 }
 
@@ -224,13 +222,7 @@ impl AppState {
     }
 }
 
-/// Signal the whole group led by `pid`: bwrap is its group leader (`process_group(0)` at
-/// spawn), so this reaches every devenv child too.
-///
-/// Must not shell out to `kill`: procps swallows a leading `-pid` as an option and sends
-/// nothing, which used to leave the entire project tree running after `neals down`.
 fn signal_group(pid: u32, signal: Signal) {
-    // A pgid of 0 means nealsd's own group and 1 means init's; never derive either from a pid.
     let pgid = match i32::try_from(pid) {
         Ok(pgid) if pgid > 1 => pgid,
         _ => {
@@ -264,11 +256,6 @@ fn pid_alive(pid: u32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
 
-/// Every descendant of `root`, discovered via `/proc/<pid>/task/<pid>/children`.
-///
-/// devenv calls `setsid()` on each task process, so the leaves (mariadbd, npm, …) sit in
-/// their own sessions and a group kill never reaches them — they used to survive `down`
-/// as orphans and keep the mysql datadir locked. Must run while the tree is still alive.
 fn collect_descendants(root: u32) -> Vec<u32> {
     let mut descendants = Vec::new();
     let mut seen: HashSet<u32> = HashSet::from([root]);
@@ -289,7 +276,6 @@ fn collect_descendants(root: u32) -> Vec<u32> {
     descendants
 }
 
-/// Block until every pid in `pids` is gone, then return the survivors.
 async fn wait_pids_gone(pids: &[u32], deadline: Duration) -> Vec<u32> {
     let mut alive: Vec<u32> = pids.to_vec();
     let start = Instant::now();
@@ -302,10 +288,6 @@ async fn wait_pids_gone(pids: &[u32], deadline: Duration) -> Vec<u32> {
     alive
 }
 
-/// Last-resort sweep after the tree kill: devenv's supervisor restarts TERMed tasks
-/// under fresh pids (escaping the /proc snapshot), and its setsid'd leaves reparent to
-/// systemd --user when it dies. Every project process inherits NEALS_RUNTIME from bwrap,
-/// so hunt survivors by environment instead of by ancestry.
 fn find_stragglers(runtime: &Path) -> Vec<u32> {
     let marker = format!("NEALS_RUNTIME={}", runtime.display());
     let mut hits = Vec::new();
@@ -355,24 +337,19 @@ async fn sweep_project_processes(runtime: &Path) {
 }
 
 pub(crate) async fn stop_process_group(pid: u32, child: &mut Child) {
-    // Snapshot before signaling: devenv's setsid'd leaves are invisible to killpg.
     let marked = collect_descendants(pid);
     signal_group(pid, Signal::SIGTERM);
     signal_pids(&marked, Signal::SIGTERM);
 
     if timeout(Duration::from_secs(2), child.wait()).await.is_err() {
-        // Late spawns between TERM and KILL would otherwise escape the snapshot.
         let mut all = marked.clone();
         all.extend(collect_descendants(pid));
         signal_group(pid, Signal::SIGKILL);
         signal_pids(&all, Signal::SIGKILL);
-        // Covers the case where the group kill missed bwrap itself.
         let _ = child.start_kill();
         let _ = timeout(Duration::from_secs(2), child.wait()).await;
     }
 
-    // Graceful leaves (mariadbd flushing its datadir) can outlive bwrap; never report
-    // down while they still hold locks, and SIGKILL whatever refuses to finish.
     let survivors = wait_pids_gone(&marked, Duration::from_secs(3)).await;
     if !survivors.is_empty() {
         eprintln!(

@@ -16,7 +16,6 @@ pub use ipc::{
 };
 pub use registry::{Project, Registry};
 
-/// Single-quote for `/bin/sh`-style consumption; safe inside bwrap's `sh -c`.
 pub fn shell_quote(s: &str) -> String {
     if s.is_empty() {
         return "''".into();

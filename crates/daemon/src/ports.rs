@@ -2,7 +2,6 @@ use anyhow::{bail, Result};
 use std::collections::HashSet;
 use std::net::TcpListener;
 
-// Leased TCP ports for running projects.
 #[derive(Debug, Default)]
 pub struct PortLeases {
     leased: HashSet<u16>,

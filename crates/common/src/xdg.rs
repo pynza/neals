@@ -45,10 +45,8 @@ pub fn projects_file() -> Result<PathBuf> {
     Ok(config_dir()?.join("projects.json"))
 }
 
-// System unit socket (`nealsd@.service`).
 pub const SYSTEM_DAEMON_SOCKET: &str = "/run/neals/nealsd.sock";
 
-// `NEALS_SOCKET` → system sock if present → `$XDG_RUNTIME_DIR/neals/nealsd.sock`.
 pub fn daemon_socket() -> Result<PathBuf> {
     Ok(daemon_socket_with(
         std::env::var_os("NEALS_SOCKET"),
@@ -87,10 +85,6 @@ pub fn ensure_dir(path: &Path) -> Result<()> {
 
 pub const LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
-// ponytail: one backup generation, and the size is only checked here, so a single long-lived
-// writer can still grow one file past the cap. Upgrade path: logrotate on ~/.local/state/neals.
-/// Open a log file for appending, first moving it aside to `<path>.1` once it grew past
-/// `LOG_MAX_BYTES`. Writers already holding the old file keep writing to the rotated inode.
 pub fn open_log(path: &Path) -> Result<fs::File> {
     if fs::metadata(path).is_ok_and(|m| m.len() > LOG_MAX_BYTES) {
         let mut rotated = path.as_os_str().to_os_string();

@@ -177,7 +177,6 @@ fn check_http() -> Check {
     if caddy_on("127.0.0.1", 80) == Some(true) {
         return Check::ok("http", "portless");
     }
-    // Fallback listen is :2015, then first free above — scan a short range.
     for port in 2015u16..2015 + 256 {
         if caddy_on("127.0.0.1", port) == Some(true) {
             return Check::warn("http", format!("requires :{port} in URLs"));
@@ -186,7 +185,6 @@ fn check_http() -> Check {
     Check::warn("http", "Caddy not listening")
 }
 
-// None = closed; Some(true) = Caddy; Some(false) = other.
 fn caddy_on(host: &str, port: u16) -> Option<bool> {
     let sa = (host, port).to_socket_addrs().ok()?.next()?;
     let mut stream = TcpStream::connect_timeout(&sa, Duration::from_millis(300)).ok()?;

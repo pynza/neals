@@ -1,5 +1,3 @@
-//! Per-project netns: bwrap + outbound slirp + host→guest TCP via setns.
-
 use crate::state::{BoundRoute, BoundTarget};
 use anyhow::{bail, Context, Result};
 use nix::libc;
@@ -14,6 +12,9 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::{Child, Command};
 use tokio::time::sleep;
+
+const SLIRP_RESOLV_CONF: &str = "nameserver 10.0.2.3\n";
+pub const PROXY_MODE_ARG: &str = "--netns-proxy";
 
 pub fn require_tools() -> Result<()> {
     for bin in ["bwrap", "slirp4netns"] {
@@ -39,14 +40,6 @@ fn which(bin: &str) -> Option<PathBuf> {
     })
 }
 
-/// slirp4netns' built-in resolver (`--configure` puts it at this address).
-const SLIRP_RESOLV_CONF: &str = "nameserver 10.0.2.3\n";
-
-/// Write the guest's `resolv.conf`; bind it in via [`bwrap_command`].
-///
-/// The host's own nameserver is unusable inside the netns: with systemd-resolved it is
-/// `127.0.0.53`, a different loopback in there, and `--disable-host-loopback` blocks the
-/// host's anyway. slirp forwards for us instead.
 pub fn write_resolv_conf(dir: &Path) -> Result<PathBuf> {
     let path = dir.join("resolv.conf");
     std::fs::write(&path, SLIRP_RESOLV_CONF)
@@ -54,10 +47,6 @@ pub fn write_resolv_conf(dir: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
-// bwrap user+net ns; brings `lo` up inside.
-// `runtime_neals` is host `$XDG_RUNTIME_DIR/neals` (or `/run/neals`); remounted after a
-// writable tmpfs /run so devenv can create `/run/devenv-*`.
-// `resolv_conf` comes from [`write_resolv_conf`].
 pub fn bwrap_command(
     program: &str,
     args: &[String],
@@ -100,7 +89,6 @@ pub fn bwrap_command(
     cmd
 }
 
-/// Host `/run` is root-owned; devenv needs to mkdir `/run/devenv-*`.
 fn mount_writable_run(cmd: &mut Command, runtime_neals: &Path) {
     cmd.arg("--tmpfs").arg("/run");
     let Ok(rel) = runtime_neals.strip_prefix("/run") else {
@@ -116,9 +104,6 @@ fn mount_writable_run(cmd: &mut Command, runtime_neals: &Path) {
     cmd.arg("--bind").arg(runtime_neals).arg(runtime_neals);
 }
 
-/// Keep `$XDG_RUNTIME_DIR` (`/run/user/<uid>`) so `neals bash` still sees ssh-agent /
-/// dbus after entering the guest mount ns. systemd nealsd sets `XDG_RUNTIME_DIR=/run`,
-/// so look up the session dir by uid, not from the daemon's env.
 fn mount_session_runtime(cmd: &mut Command, uid: nix::unistd::Uid) {
     let session = PathBuf::from(format!("/run/user/{uid}"));
     if !session.is_dir() {
@@ -128,15 +113,7 @@ fn mount_session_runtime(cmd: &mut Command, uid: nix::unistd::Uid) {
     cmd.arg("--bind").arg(&session).arg(&session);
 }
 
-/// Point the guest's resolver at slirp. Must run after [`mount_writable_run`], or the
-/// tmpfs hides the bind again.
-///
-/// `/etc/resolv.conf` is usually a symlink into `/run` (systemd-resolved), whose target
-/// that tmpfs wipes, so the bind lands on the resolved path with its parents recreated
-/// inside the tmpfs.
 fn mount_resolv_conf(cmd: &mut Command, resolv_conf: &Path) {
-    // Missing or dangling on the host: leave DNS alone, bwrap cannot create the file
-    // under the host's root-owned /etc.
     let Ok(dest) = std::fs::canonicalize("/etc/resolv.conf") else {
         return;
     };
@@ -176,7 +153,6 @@ fn clear_caps_for_userns() -> std::io::Result<()> {
         permitted: u32,
         inheritable: u32,
     }
-    // LINUX_CAPABILITY_VERSION_3
     let mut hdr = CapHeader {
         version: 0x2008_0522,
         pid: 0,
@@ -198,7 +174,6 @@ fn clear_caps_for_userns() -> std::io::Result<()> {
     }
     Ok(())
 }
-
 
 pub struct SlirpHandle {
     child: Child,
@@ -238,18 +213,33 @@ pub async fn start_slirp(netns_pid: u32) -> Result<SlirpHandle> {
     Ok(SlirpHandle { child })
 }
 
-/// argv[1] of the per-route proxy helper (see `start_proxies`).
-pub const PROXY_MODE_ARG: &str = "--netns-proxy";
+pub fn find_nealsd_exe() -> Result<PathBuf> {
+    if let Ok(env_path) = std::env::var("NEALSD_BIN") {
+        let p = PathBuf::from(env_path.trim());
+        if p.is_file() {
+            return Ok(p);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if exe.file_name().and_then(|n| n.to_str()) == Some("nealsd") {
+            return Ok(exe);
+        }
+        let sibling = exe.with_file_name("nealsd");
+        if sibling.is_file() {
+            return Ok(sibling);
+        }
+        if let Some(parent) = exe.parent().and_then(|p| p.parent()) {
+            let target_nealsd = parent.join("nealsd");
+            if target_nealsd.is_file() {
+                return Ok(target_nealsd);
+            }
+        }
+    }
+    which("nealsd").context("failed to locate the nealsd binary")
+}
 
-/// Start one helper process per proxied TCP route.
-///
-/// The helper has to be a *process*: reaching a service bound to the guest's loopback means
-/// entering the project's user namespace first, and the kernel rejects `setns(CLONE_NEWUSER)`
-/// from a multi-threaded caller — which nealsd, running a multi-threaded tokio runtime, always
-/// is. Each helper inherits its already-bound host listener as stdin; a socket keeps the netns
-/// it was created in, so the helper still accepts host connections after moving into the guest.
 pub fn start_proxies(bound: &[BoundRoute], netns_pid: u32) -> Result<Vec<Child>> {
-    let exe = std::env::current_exe().context("failed to locate the nealsd binary")?;
+    let exe = find_nealsd_exe()?;
     let mut helpers = Vec::new();
     for route in bound {
         let BoundTarget::Tcp {
@@ -277,11 +267,7 @@ pub fn start_proxies(bound: &[BoundRoute], netns_pid: u32) -> Result<Vec<Child>>
     Ok(helpers)
 }
 
-/// Body of `nealsd --netns-proxy <netns_pid> <guest_port>`, with the host listener on stdin.
-///
-/// Must run before anything spawns a thread, otherwise the `setns` below fails with EINVAL.
 pub fn run_proxy_helper(netns_pid: u32, guest_port: u16) -> Result<()> {
-    // userns then netns — required for rootless setns.
     let userns = File::open(format!("/proc/{netns_pid}/ns/user"))
         .with_context(|| format!("open userns of pid {netns_pid}"))?;
     let netns = File::open(format!("/proc/{netns_pid}/ns/net"))
@@ -293,8 +279,6 @@ pub fn run_proxy_helper(netns_pid: u32, guest_port: u16) -> Result<()> {
     let guest = SocketAddr::from(([127, 0, 0, 1], guest_port));
     loop {
         match listener.accept() {
-            // ponytail: two threads per connection. Fine for a dev box; if it ever matters,
-            // swap the helper body for a small single-threaded poll loop.
             Ok((client, _)) => {
                 std::thread::spawn(move || {
                     if let Err(err) = splice(client, guest) {
@@ -307,8 +291,6 @@ pub fn run_proxy_helper(netns_pid: u32, guest_port: u16) -> Result<()> {
                     err.kind(),
                     ErrorKind::Interrupted | ErrorKind::ConnectionAborted
                 ) => {}
-            // Anything else (a bad stdin, fd exhaustion) would spin here forever; let nealsd
-            // see the helper die instead.
             Err(err) => return Err(err).context("accept on the inherited host listener"),
         }
     }
@@ -330,7 +312,6 @@ fn splice(client: std::net::TcpStream, guest: SocketAddr) -> Result<()> {
     Ok(())
 }
 
-// Inner pid (bwrap itself stays on the host netns).
 pub fn netns_pid_for_bwrap(bwrap_pid: u32) -> Option<u32> {
     let path = format!("/proc/{bwrap_pid}/task/{bwrap_pid}/children");
     if let Ok(raw) = std::fs::read_to_string(&path) {
@@ -395,12 +376,10 @@ pub fn userns_works() -> bool {
 mod tests {
     use super::*;
 
-    /// Binding the guest resolver before `--tmpfs /run` would silently hide it again,
-    /// which is exactly how DNS broke inside the netns.
     #[test]
     fn resolv_conf_is_bound_after_the_run_tmpfs() {
         if std::fs::canonicalize("/etc/resolv.conf").is_err() {
-            return; // no host resolver to shadow
+            return;
         }
         let resolv = Path::new("/run/neals/demo/resolv.conf");
         let cmd = bwrap_command("true", &[], Path::new("/tmp"), Path::new("/run/neals"), resolv);

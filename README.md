@@ -146,8 +146,6 @@ neals bash demo        # same netns as the running project (must be up)
 neals down demo
 ```
 
-Or use the interactive loop: `neals repl`.
-
 ## Commands
 
 | Command | What it does |
@@ -163,7 +161,6 @@ Or use the interactive loop: `neals repl`.
 | `neals bash <name>` | Shell in the project's netns (project must be up) |
 | `neals exec <name> -- …` | One-shot command in that netns + devenv |
 | `neals doctor` | Check tools, dirs, bind, daemon |
-| `neals repl` | Interactive command loop |
 | `neals completions <shell>` | Print completion snippet for shell rc |
 
 Global: `-y` / `--yes` skips confirmations. `neals --help` for full text.

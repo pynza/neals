@@ -110,10 +110,6 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
         }
     };
     let mut cmd = bwrap_command(&program, &args, &project.path, &runtime_root, &resolv_conf);
-    // The guest's `/run` is a private tmpfs: without this, devenv (>= 2) puts its
-    // runtime — per-process logs included — in `/run/devenv-*` where the host
-    // (and `neals logs <project> <process>`) can never see it. Point it at the
-    // session dir instead, which `mount_session_runtime` shares with the host.
     let session_runtime = PathBuf::from(format!("/run/user/{}", nix::unistd::getuid()));
     if session_runtime.is_dir() {
         cmd.env("XDG_RUNTIME_DIR", session_runtime);
@@ -270,7 +266,6 @@ fn bind_one(state: &mut AppState, decl: &ServiceDecl) -> Result<BoundRoute, Stri
             }
             .map_err(|e| format!("TCP port alloc for `{}`: {e}", decl.service))?;
 
-            // Preferred port is fixed in the guest; host lease may differ.
             let guest_port = preferred_port.unwrap_or(host_port);
 
             Ok(BoundRoute {

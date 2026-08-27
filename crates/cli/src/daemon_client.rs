@@ -33,7 +33,6 @@ pub fn ensure_daemon() -> Result<()> {
     }
 
     start_nealsd()?;
-    // caddy admin can take a few seconds before ping works
     for _ in 0..40 {
         thread::sleep(Duration::from_millis(250));
         if ping_ok() {
@@ -74,10 +73,22 @@ fn start_nealsd() -> Result<()> {
 }
 
 pub(crate) fn find_nealsd() -> PathBuf {
+    if let Ok(env_path) = std::env::var("NEALSD_BIN") {
+        let p = PathBuf::from(env_path.trim());
+        if p.is_file() {
+            return p;
+        }
+    }
     if let Ok(exe) = std::env::current_exe() {
         let sibling = exe.with_file_name("nealsd");
         if sibling.is_file() {
             return sibling;
+        }
+        if let Some(parent) = exe.parent().and_then(|p| p.parent()) {
+            let target_nealsd = parent.join("nealsd");
+            if target_nealsd.is_file() {
+                return target_nealsd;
+            }
         }
     }
     PathBuf::from("nealsd")

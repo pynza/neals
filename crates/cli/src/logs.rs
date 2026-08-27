@@ -98,7 +98,6 @@ pub fn tail_lines(path: &Path, n: usize) -> Result<Vec<String>> {
     Ok(text.lines().map(str::to_string).collect())
 }
 
-// Tailing reader for live / follow.
 pub struct LogFollower {
     path: PathBuf,
     file: File,
@@ -196,8 +195,6 @@ pub fn follow_project_logs(project: &str) -> Result<()> {
     }
 }
 
-// Per-process logs, written by devenv's native process manager (devenv >= 2)
-// under `$DEVENV_RUNTIME/processes/logs/<name>.{stdout,stderr}.log`.
 fn process_log_file(runtime: &Path, process: &str, stream: &str) -> PathBuf {
     runtime
         .join("processes")
@@ -218,9 +215,6 @@ pub fn process_log_names(runtime: &Path) -> Vec<String> {
     names
 }
 
-// Process names visible across every devenv runtime under `base`
-// (`$XDG_RUNTIME_DIR`, holding one `devenv-*` dir per up project).
-// Shell-completion source: plain directory scans, no devenv spawn.
 pub fn running_process_names(base: &Path) -> Vec<String> {
     let Ok(runtimes) = std::fs::read_dir(base) else {
         return Vec::new();
@@ -259,7 +253,6 @@ pub fn print_process_logs(project_path: &Path, process: &str, follow: bool) -> R
         );
     }
 
-    // stdout first, then stderr; no labels unless both streams are live.
     for path in [&out, &err] {
         if path.is_file() {
             for line in tail_lines(path, LOG_TAIL_LINES)? {

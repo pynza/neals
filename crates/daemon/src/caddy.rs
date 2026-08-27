@@ -14,7 +14,6 @@ pub struct CaddyManager {
     admin_sock: PathBuf,
     config_path: PathBuf,
     http_addr: String,
-    // When true, Admin API failures are ignored (`NEALS_CADDY_CMD` fakes).
     loose: bool,
 }
 
@@ -278,7 +277,6 @@ fn http_listen_addr() -> Result<String> {
     Ok(format!("127.0.0.1:{}", pick_http_port()?))
 }
 
-/// Prefer :80 (portless), then Caddy's classic :2015, then first free above.
 fn pick_http_port() -> Result<u16> {
     use std::net::TcpListener;
 
@@ -307,7 +305,6 @@ pub fn http_port_from_addr(addr: &str) -> u16 {
 }
 
 fn https_port_from_addr(addr: &str) -> u16 {
-    // Avoid :443 while automatic_https is off (EACCES without CAP).
     let p = http_port_from_addr(addr);
     if p < 1024 {
         2016

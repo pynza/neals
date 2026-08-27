@@ -2,7 +2,6 @@ mod daemon_client;
 mod doctor;
 mod live;
 mod logs;
-mod repl;
 mod shell;
 mod style;
 
@@ -61,7 +60,6 @@ Keys in the live view (neals up / logs -f):
     styles = clap_styles()
 )]
 struct Cli {
-    // Skip confirmation prompts
     #[arg(short = 'y', long = "yes", global = true)]
     yes: bool,
 
@@ -79,26 +77,20 @@ fn clap_styles() -> styling::Styles {
 
 #[derive(Subcommand)]
 enum Commands {
-    // Register the current directory in the global project registry
     #[command(long_about = "\
 Reads `neals.name` from devenv.nix (folder name as fallback) and adds the
 project to ~/.config/neals/projects.json.")]
     Register,
 
-    // List registered projects
     List,
 
-    // Remove a project from the registry
     Unregister {
-        // Project name as shown by `neals list`
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
     },
 
-    // Remove registry entries whose paths no longer exist
     Prune,
 
-    // Start a project (`devenv up`) and open the live log view
     #[command(long_about = "\
 Starts the project under nealsd, prints HTTP routes, then opens a live view
 with sticky route URLs and scrolling logs.\n\n\
@@ -107,21 +99,17 @@ Use -d/--detach to skip the live view.")]
     Up {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
-        // Start without opening the live view
         #[arg(short = 'd', long = "detach")]
         detach: bool,
     },
 
-    // Stop a running project
     Down {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
     },
 
-    // Show projects currently running under nealsd
     Status,
 
-    // Show a project's daemon log
     #[command(long_about = "\
 Prints the last 100 log lines of the project (merged devenv output). With an
 optional PROCESS name, prints that process's own stdout/stderr instead
@@ -131,21 +119,17 @@ PROCESS, follows its stdout/stderr in the terminal.")]
     Logs {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
-        // Show only this devenv process's logs
         #[arg(
             value_name = "PROCESS",
             add = ArgValueCompleter::new(complete_processes)
         )]
         process: Option<String>,
-        // Follow new lines instead of printing a tail
         #[arg(short = 'f', long = "follow")]
         follow: bool,
     },
 
-    // Check that required tools and directories are available
     Doctor,
 
-    // Open an interactive shell in the project's devenv
     #[command(name = "bash", long_about = "\
 Enters a quiet `devenv shell` using $SHELL inside the project's network
 namespace (project must be up). bash/zsh get a short prompt
@@ -155,19 +139,13 @@ namespace (project must be up). bash/zsh get a short prompt
         project: String,
     },
 
-    // Run a command inside a project's devenv shell
     Exec {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
-        // Command and args after `--`, e.g. `neals exec app -- npm test`
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<String>,
     },
 
-    // Interactive command loop (list, up, logs, …)
-    Repl,
-
-    // Print shell completion setup for bash, zsh, fish, elvish, or powershell
     Completions {
         shell: CompletionShell,
     },
@@ -193,8 +171,6 @@ fn complete_projects(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
         .collect()
 }
 
-// Running devenv processes across all up projects (the completer API only
-// sees the current word, so we cannot scope to the typed project).
 fn complete_processes(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
     let prefix = current.to_string_lossy();
     let Some(base) = std::env::var_os("XDG_RUNTIME_DIR") else {
@@ -276,7 +252,6 @@ fn run() -> Result<ExitCode> {
             let path = project_path(&project)?;
             shell::run_project_exec(&project, &path, &command)
         }
-        Commands::Repl => repl::run_repl(cli.yes),
         Commands::Completions { shell } => {
             cmd_completions(shell)?;
             Ok(ExitCode::SUCCESS)
@@ -439,7 +414,7 @@ pub(crate) fn cmd_up(project: &str, detach: bool) -> Result<()> {
             }
             if detach {
                 style::print_dim(&format!(
-                    "detached; use `neals logs {project} -f` or `neals repl` to follow"
+                    "detached; use `neals logs {project} -f` to follow"
                 ));
                 return Ok(());
             }

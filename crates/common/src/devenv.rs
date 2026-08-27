@@ -26,7 +26,6 @@ impl ProjectName {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServiceKind {
-    // `None` preferred = ephemeral (legacy `route = "tcp"`).
     Tcp {
         preferred_port: Option<u16>,
         proxy: bool,
@@ -57,7 +56,6 @@ impl ServiceDecl {
     }
 }
 
-// Legacy `neals.route`; prefer [`ServiceDecl`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteKind {
     Unix { socket_file: String },
@@ -76,7 +74,6 @@ impl RouteDecl {
     }
 }
 
-// `api-backend` → `API_BACKEND`
 pub fn env_service_key(service: &str) -> String {
     service
         .chars()
@@ -88,12 +85,10 @@ pub fn env_service_key(service: &str) -> String {
         .collect()
 }
 
-// `redis` → `NEALS_REDIS_PORT`
 pub fn env_port_var(service: &str) -> String {
     format!("NEALS_{}_PORT", env_service_key(service))
 }
 
-// Parse `neals.name = "..."` via rnix (string literals only).
 pub fn parse_neals_name(src: &str) -> Option<String> {
     let bindings = collect_neals_literals(src).ok()?;
     let NixLit::Str(name) = bindings.get(&["name".into()][..])? else {
@@ -106,7 +101,6 @@ pub fn parse_neals_name(src: &str) -> Option<String> {
     }
 }
 
-// `neals.services` (+ legacy `neals.route`).
 pub fn parse_neals_services(src: &str) -> Result<Vec<ServiceDecl>> {
     let bindings = collect_neals_literals(src)?;
     let mut drafts: HashMap<String, ServiceDraft> = HashMap::new();
@@ -167,7 +161,6 @@ pub fn parse_neals_services(src: &str) -> Result<Vec<ServiceDecl>> {
         services.push(draft.into_decl(service)?);
     }
 
-    // Legacy neals.route.* → services.
     let mut seen: HashMap<String, ()> = services
         .iter()
         .map(|s| (s.service.clone(), ()))
@@ -216,7 +209,6 @@ pub fn parse_neals_services(src: &str) -> Result<Vec<ServiceDecl>> {
     Ok(services)
 }
 
-// Legacy `neals.route.<svc> = "sock" | "tcp"`.
 pub fn parse_neals_routes(src: &str) -> Result<Vec<RouteDecl>> {
     Ok(parse_neals_services(src)?
         .into_iter()
@@ -300,9 +292,6 @@ pub fn read_neals_routes(project_dir: &Path) -> Result<Vec<RouteDecl>> {
         .collect())
 }
 
-// `$DEVENV_RUNTIME` for a project (devenv >= 2): the native process manager keeps
-// per-process logs under `<runtime>/processes/logs/<name>.{stdout,stderr}.log`.
-// The dir sits on a tmpfs and vanishes when the project stops.
 pub fn devenv_runtime(project_dir: &Path) -> Result<PathBuf> {
     let output = Command::new("devenv")
         .args(["eval", "devenv.runtime"])
@@ -414,7 +403,6 @@ fn lit_str(value: &NixLit, path: &str) -> Result<String> {
     Ok(s.clone())
 }
 
-// Attr paths under `neals` → literal values.
 fn collect_neals_literals(src: &str) -> Result<HashMap<Vec<String>, NixLit>> {
     let root = Root::parse(src);
     let Some(expr) = root.tree().expr() else {

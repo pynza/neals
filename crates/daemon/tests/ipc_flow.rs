@@ -268,7 +268,7 @@ async fn socket_ping_roundtrip() {
 async fn crashed_up_process_is_reaped_and_ports_released() {
     require_netns!();
     let _env = TestEnv::setup();
-    std::env::set_var("NEALS_UP_CMD", "true");
+    std::env::set_var("NEALS_UP_CMD", "sleep 0.2");
     let state = Arc::new(Mutex::new(AppState::default()));
 
     assert_eq!(
@@ -282,7 +282,6 @@ async fn crashed_up_process_is_reaped_and_ports_released() {
         Response::Ok
     );
 
-    // Wait for exit, then reap.
     for _ in 0..50 {
         {
             let mut st = state.lock().await;
@@ -299,7 +298,6 @@ async fn crashed_up_process_is_reaped_and_ports_released() {
         other => panic!("expected empty Status after reap, got {other:?}"),
     }
 
-    // Leases freed → second up must work.
     std::env::set_var("NEALS_UP_CMD", "sleep 3600");
     assert_eq!(
         roundtrip(
@@ -507,7 +505,15 @@ async fn two_projects_same_preferred_get_distinct_ports() {
                     .iter()
                     .find(|r| r.starts_with("redis → 127.0.0.1:"))
                     .unwrap();
-                label.rsplit(':').next().unwrap().parse().unwrap()
+                label
+                    .split("127.0.0.1:")
+                    .nth(1)
+                    .unwrap()
+                    .split_whitespace()
+                    .next()
+                    .unwrap()
+                    .parse()
+                    .unwrap()
             };
             let a = port("demo");
             let b = port("other");
@@ -581,7 +587,15 @@ async fn concurrent_up_same_preferred_no_collision() {
                         .iter()
                         .find(|r| r.starts_with("redis → 127.0.0.1:"))
                         .unwrap();
-                    label.rsplit(':').next().unwrap().parse().unwrap()
+                    label
+                        .split("127.0.0.1:")
+                        .nth(1)
+                        .unwrap()
+                        .split_whitespace()
+                        .next()
+                        .unwrap()
+                        .parse()
+                        .unwrap()
                 })
                 .collect();
             assert_ne!(ports[0], ports[1]);
@@ -625,17 +639,22 @@ time.sleep(3600)
     )
     .unwrap();
 
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/projects");
-    for (name, dir) in [
-        ("redis-project-1", "redis-project-1"),
-        ("redis-project-2", "redis-project-2"),
-    ] {
-        let src = fixture.join(dir);
+    for name in ["redis-project-1", "redis-project-2"] {
         let dst = env.root.join(format!("{name}-project"));
         fs::create_dir_all(&dst).unwrap();
-        fs::copy(src.join("devenv.nix"), dst.join("devenv.nix")).unwrap();
+        fs::write(
+            dst.join("devenv.nix"),
+            format!(
+                r#"{{
+  neals.name = "{name}";
+  neals.services.redis.port = 6379;
+}}
+"#
+            ),
+        )
+        .unwrap();
         let mut registry = Registry::load().unwrap();
-        let _ = registry.remove(name); // ok if missing
+        let _ = registry.remove(name);
         registry
             .add(Project {
                 name: name.into(),
@@ -709,13 +728,12 @@ time.sleep(3600)
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    let port1 = port1.expect("redis-project-1 bound");
-    let port2 = port2.expect("redis-project-2 bound");
-    assert_ne!(port1, port2);
-    assert!(port1 >= 6379);
-    assert!(port2 >= 6379);
+    let guest_port1 = port1.expect("redis-project-1 bound");
+    let guest_port2 = port2.expect("redis-project-2 bound");
+    assert_eq!(guest_port1, 6379);
+    assert_eq!(guest_port2, 6379);
 
-    match roundtrip(&state, Request::Status).await {
+    let (host_port1, host_port2) = match roundtrip(&state, Request::Status).await {
         Response::Status { projects } => {
             let label_port = |name: &str| -> u16 {
                 let p = projects.iter().find(|p| p.name == name).unwrap();
@@ -723,19 +741,26 @@ time.sleep(3600)
                     .iter()
                     .find(|r| r.starts_with("redis → 127.0.0.1:"))
                     .unwrap()
-                    .rsplit(':')
+                    .split("127.0.0.1:")
+                    .nth(1)
+                    .unwrap()
+                    .split_whitespace()
                     .next()
                     .unwrap()
                     .parse()
                     .unwrap()
             };
-            assert_eq!(label_port("redis-project-1"), port1);
-            assert_eq!(label_port("redis-project-2"), port2);
+            let h1 = label_port("redis-project-1");
+            let h2 = label_port("redis-project-2");
+            assert_ne!(h1, h2);
+            assert!(h1 >= 6379);
+            assert!(h2 >= 6379);
+            (h1, h2)
         }
         other => panic!("expected Status, got {other:?}"),
-    }
+    };
 
-    for port in [port1, port2] {
+    for port in [host_port1, host_port2] {
         let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .unwrap_or_else(|e| panic!("connect {port}: {e}"));
