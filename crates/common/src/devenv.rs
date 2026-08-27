@@ -3,7 +3,8 @@ use rnix::ast::{self, Attr, Expr, HasEntry, InterpolPart, LiteralKind};
 use rnix::Root;
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectName {
@@ -297,6 +298,50 @@ pub fn read_neals_routes(project_dir: &Path) -> Result<Vec<RouteDecl>> {
             },
         })
         .collect())
+}
+
+// `$DEVENV_RUNTIME` for a project (devenv >= 2): the native process manager keeps
+// per-process logs under `<runtime>/processes/logs/<name>.{stdout,stderr}.log`.
+// The dir sits on a tmpfs and vanishes when the project stops.
+pub fn devenv_runtime(project_dir: &Path) -> Result<PathBuf> {
+    let output = Command::new("devenv")
+        .args(["eval", "devenv.runtime"])
+        .current_dir(project_dir)
+        .stdin(Stdio::null())
+        .output()
+        .context("failed to run `devenv` (is devenv on PATH?)")?;
+    parse_devenv_runtime(
+        output.status.success(),
+        &output.stdout,
+        &output.stderr,
+    )
+}
+
+fn parse_devenv_runtime(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<PathBuf> {
+    if !success {
+        let err = String::from_utf8_lossy(stderr);
+        let err = err.trim();
+        bail!(
+            "`devenv eval devenv.runtime` failed{}",
+            if err.is_empty() {
+                String::new()
+            } else {
+                format!(": {err}")
+            }
+        );
+    }
+    let text = String::from_utf8_lossy(stdout);
+    let text = text.trim();
+    let value: serde_json::Value =
+        serde_json::from_str(text).with_context(|| format!("unexpected `devenv eval` output: {text}"))?;
+    let raw = value
+        .get("devenv.runtime")
+        .and_then(|v| v.as_str())
+        .context("`devenv eval` output is missing `devenv.runtime`")?;
+    if raw.is_empty() {
+        bail!("devenv.runtime is empty");
+    }
+    Ok(PathBuf::from(raw))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -794,5 +839,27 @@ mod tests {
         assert!(got.is_fallback());
         assert_eq!(got.as_str(), tmp.file_name().unwrap().to_str().unwrap());
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn parse_runtime_json() {
+        let raw = br#"
+{
+  "devenv.runtime": "/run/user/1000/devenv-234653f"
+}
+"#;
+        let path = parse_devenv_runtime(true, raw, b"").unwrap();
+        assert_eq!(path, PathBuf::from("/run/user/1000/devenv-234653f"));
+    }
+
+    #[test]
+    fn parse_runtime_failure_includes_stderr() {
+        let err = parse_devenv_runtime(false, b"", b"boom\n").unwrap_err().to_string();
+        assert!(err.contains("boom"), "{err}");
+    }
+
+    #[test]
+    fn parse_runtime_rejects_garbage() {
+        assert!(parse_devenv_runtime(true, b"not json", b"").is_err());
     }
 }

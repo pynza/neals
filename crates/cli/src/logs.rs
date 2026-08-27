@@ -196,6 +196,103 @@ pub fn follow_project_logs(project: &str) -> Result<()> {
     }
 }
 
+// Per-process logs, written by devenv's native process manager (devenv >= 2)
+// under `$DEVENV_RUNTIME/processes/logs/<name>.{stdout,stderr}.log`.
+fn process_log_file(runtime: &Path, process: &str, stream: &str) -> PathBuf {
+    runtime
+        .join("processes")
+        .join("logs")
+        .join(format!("{process}.{stream}.log"))
+}
+
+pub fn process_log_names(runtime: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(runtime.join("processes").join("logs"))
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter_map(|f| f.strip_suffix(".stdout.log").map(str::to_string))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+// Process names visible across every devenv runtime under `base`
+// (`$XDG_RUNTIME_DIR`, holding one `devenv-*` dir per up project).
+// Shell-completion source: plain directory scans, no devenv spawn.
+pub fn running_process_names(base: &Path) -> Vec<String> {
+    let Ok(runtimes) = std::fs::read_dir(base) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = runtimes
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("devenv-"))
+        .filter(|e| e.path().join("processes").join("logs").is_dir())
+        .flat_map(|e| process_log_names(&e.path()))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+pub fn print_process_logs(project_path: &Path, process: &str, follow: bool) -> Result<()> {
+    let runtime = neals_common::devenv::devenv_runtime(project_path).with_context(|| {
+        format!(
+            "cannot locate the devenv runtime for {}",
+            project_path.display()
+        )
+    })?;
+    let out = process_log_file(&runtime, process, "stdout");
+    let err = process_log_file(&runtime, process, "stderr");
+    if !out.is_file() && !err.is_file() {
+        let names = process_log_names(&runtime);
+        if names.is_empty() {
+            bail!(
+                "no per-process logs under {} (is the project up? devenv >= 2 required)",
+                runtime.join("processes").join("logs").display()
+            );
+        }
+        bail!(
+            "no logs for process `{process}`; running processes: {}",
+            names.join(", ")
+        );
+    }
+
+    // stdout first, then stderr; no labels unless both streams are live.
+    for path in [&out, &err] {
+        if path.is_file() {
+            for line in tail_lines(path, LOG_TAIL_LINES)? {
+                println!("{line}");
+            }
+        }
+    }
+    io::stdout().flush().ok();
+
+    if !follow {
+        return Ok(());
+    }
+    let mut followers: Vec<LogFollower> = Vec::new();
+    for path in [&out, &err] {
+        if path.is_file() {
+            followers.push(LogFollower::open_at_end(path)?);
+        }
+    }
+    loop {
+        let mut printed = false;
+        for follower in followers.iter_mut() {
+            for line in follower.poll_lines()? {
+                println!("{line}");
+                printed = true;
+            }
+        }
+        if printed {
+            io::stdout().flush().ok();
+        }
+        thread::sleep(FOLLOW_POLL);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,5 +365,56 @@ mod tests {
         drop(file);
         assert_eq!(f.poll_lines().unwrap(), vec!["b"]);
         let _ = fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn process_log_names_sorted_and_deduped() {
+        let runtime = temp_path("proc-logs");
+        let dir = runtime.join("processes").join("logs");
+        fs::create_dir_all(&dir).unwrap();
+        for name in ["b.stdout.log", "a.stdout.log", "a.stderr.log", "ignored.txt"] {
+            fs::write(dir.join(name), "").unwrap();
+        }
+        assert_eq!(process_log_names(&runtime), vec!["a", "b"]);
+        let _ = fs::remove_dir_all(&runtime);
+    }
+
+    #[test]
+    fn process_log_names_missing_dir_is_empty() {
+        let runtime = temp_path("proc-missing");
+        assert!(process_log_names(&runtime).is_empty());
+    }
+
+    #[test]
+    fn running_process_names_scans_devenv_runtimes() {
+        let base = temp_path("xdg");
+        for runtime in ["devenv-aaa111", "devenv-bbb222", "other-dir"] {
+            let logs = base.join(runtime).join("processes").join("logs");
+            fs::create_dir_all(&logs).unwrap();
+        }
+        for (runtime, name) in [
+            ("devenv-aaa111", "be.stdout.log"),
+            ("devenv-aaa111", "redis.stdout.log"),
+            ("devenv-bbb222", "admin.stdout.log"),
+            ("other-dir", "ghost.stdout.log"),
+        ] {
+            fs::write(
+                base.join(runtime)
+                    .join("processes")
+                    .join("logs")
+                    .join(name),
+                "",
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            running_process_names(&base),
+            vec!["admin", "be", "redis"]
+        );
+    }
+
+    #[test]
+    fn running_process_names_missing_base_is_empty() {
+        assert!(running_process_names(&temp_path("no-xdg")).is_empty());
     }
 }

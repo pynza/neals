@@ -123,12 +123,21 @@ Use -d/--detach to skip the live view.")]
 
     // Show a project's daemon log
     #[command(long_about = "\
-Prints the last 100 log lines. With -f/--follow, opens the same live view
-as `neals up` (routes header + scrolling logs).")]
+Prints the last 100 log lines of the project (merged devenv output). With an
+optional PROCESS name, prints that process's own stdout/stderr instead
+(devenv >= 2; the project must be up). With -f/--follow and no PROCESS, opens
+the same live view as `neals up` (routes header + scrolling logs); with a
+PROCESS, follows its stdout/stderr in the terminal.")]
     Logs {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
-        // Open the live view and follow new lines
+        // Show only this devenv process's logs
+        #[arg(
+            value_name = "PROCESS",
+            add = ArgValueCompleter::new(complete_processes)
+        )]
+        process: Option<String>,
+        // Follow new lines instead of printing a tail
         #[arg(short = 'f', long = "follow")]
         follow: bool,
     },
@@ -184,6 +193,20 @@ fn complete_projects(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
         .collect()
 }
 
+// Running devenv processes across all up projects (the completer API only
+// sees the current word, so we cannot scope to the typed project).
+fn complete_processes(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
+    let prefix = current.to_string_lossy();
+    let Some(base) = std::env::var_os("XDG_RUNTIME_DIR") else {
+        return Vec::new();
+    };
+    logs::running_process_names(std::path::Path::new(&base))
+        .into_iter()
+        .filter(|name| name.starts_with(prefix.as_ref()))
+        .map(CompletionCandidate::new)
+        .collect()
+}
+
 fn main() -> ExitCode {
     CompleteEnv::with_factory(Cli::command).complete();
 
@@ -227,11 +250,20 @@ fn run() -> Result<ExitCode> {
             cmd_status()?;
             Ok(ExitCode::SUCCESS)
         }
-        Commands::Logs { project, follow } => {
-            if follow {
-                let _ = run_live_view(&project, false)?;
-            } else {
-                logs::print_project_logs(&project, false)?;
+        Commands::Logs {
+            project,
+            process,
+            follow,
+        } => {
+            match process.as_deref() {
+                Some(process) => {
+                    let path = project_path(&project)?;
+                    logs::print_process_logs(&path, process, follow)?;
+                }
+                None if follow => {
+                    let _ = run_live_view(&project, false)?;
+                }
+                None => logs::print_project_logs(&project, false)?,
             }
             Ok(ExitCode::SUCCESS)
         }
