@@ -6,8 +6,8 @@ Neals keeps a registry of projects, starts and stops them through a daemon
 (`nealsd`), runs each project in its own network namespace, allocates host
 loopback TCP ports without collisions, reverse-proxies into the guest
 `127.0.0.1` binds, exposes selected HTTP services at
-`{service}.{project}.localhost` via Caddy, and gives you a live view plus a
-branded project shell in the same namespace.
+`{service}.{project}.localhost` via Caddy, and gives you multiplex process
+logs plus a branded project shell in the same namespace.
 
 ## Install
 
@@ -138,13 +138,15 @@ and bridges them into the guest.
 ```bash
 neals register
 neals doctor
-neals up demo          # live view: services (real ports) + logs
-# Ctrl+C / q  → detach (keeps running)
-# Ctrl+X      → stop project
+neals up demo          # prints routes, then follows process logs
+# Ctrl+Q      → detach (keeps running)
+# Ctrl+C / X  → stop project
 neals status
 neals bash demo        # same netns as the running project (must be up)
 neals down demo
 ```
+
+Reference `devenv.nix` layouts (not full apps): see [examples/](examples/).
 
 ## Commands
 
@@ -154,10 +156,10 @@ neals down demo
 | `neals list` | Show registered projects |
 | `neals unregister <name>` | Remove from registry |
 | `neals prune` | Drop ghost entries (missing paths) |
-| `neals up <name> [-d]` | Start project; live view unless `-d` |
+| `neals up <name> [-d]` | Start project; follow process logs unless `-d` |
 | `neals down <name>` | Stop project |
 | `neals status` | Running projects, PIDs, services (real ports) |
-| `neals logs <name> [-f]` | Tail logs; `-f` opens live view |
+| `neals logs <name> [-f]` | Tail logs; `-f` follows all processes |
 | `neals bash <name>` | Shell in the project's netns (project must be up) |
 | `neals exec <name> -- …` | One-shot command in that netns + devenv |
 | `neals doctor` | Check tools, dirs, bind, daemon |
@@ -165,17 +167,22 @@ neals down demo
 
 Global: `-y` / `--yes` skips confirmations. `neals --help` for full text.
 
-### Live view keys
+### Log follow keys
+
+While attached via `neals up` or `neals logs -f` (no PROCESS):
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+C` or `q` | Detach; project keeps running |
-| `Ctrl+X` | Stop the project and leave |
+| `Ctrl+Q` | Detach; project keeps running |
+| `Ctrl+C` or `Ctrl+X` | Stop the project and leave |
+
+Process lines are prefixed like `be       | …` / `fe       | …` (devenv ≥ 2).
 
 ### Project shell
 
 `neals bash` respects `$SHELL`, runs devenv quietly, and for bash/zsh sets a
-short prompt `neals:<project> …`. Use `neals status` / live view for services.
+short prompt `neals:<project> …`. Use `neals status` (or the routes printed
+by `neals up`) for services.
 
 ## Directories & data
 
