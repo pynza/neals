@@ -27,7 +27,7 @@ per-project network namespaces, HTTP routes via Caddy, and branded shells.
 
 Typical flow:
   neals register
-  neals up my-app          # live view: routes + logs
+  neals up my-app          # follow process logs
   # browser → http://api.my-app.localhost/  (system daemon)
   #        or http://api.my-app.localhost:2015/  (ad-hoc)
   neals bash my-app        # same netns as the running project
@@ -44,9 +44,9 @@ Directories:
   /run/neals/nealsd.sock            system daemon socket (if installed)
   <project>/.neals/                 convenience symlinks to UNIX sockets
 
-Keys in the live view (neals up / logs -f):
-  Ctrl+C / q    detach (project keeps running)
-  Ctrl+X        stop the project
+Keys while following logs (neals up / logs -f):
+  Ctrl+Q        detach (project keeps running)
+  Ctrl+C / X    stop the project
 ";
 
 #[derive(Parser)]
@@ -92,10 +92,10 @@ project to ~/.config/neals/projects.json.")]
     Prune,
 
     #[command(long_about = "\
-Starts the project under nealsd, prints HTTP routes, then opens a live view
-with sticky route URLs and scrolling logs.\n\n\
-Ctrl+C / q detach (keeps running). Ctrl+X stops the project.\n\
-Use -d/--detach to skip the live view.")]
+Starts the project under nealsd, prints HTTP routes, then follows process logs
+in the terminal.\n\n\
+Ctrl+Q detach (keeps running). Ctrl+C / Ctrl+X stop the project.\n\
+Use -d/--detach to skip following logs.")]
     Up {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
@@ -113,8 +113,8 @@ Use -d/--detach to skip the live view.")]
     #[command(long_about = "\
 Prints the last 100 log lines of the project (merged devenv output). With an
 optional PROCESS name, prints that process's own stdout/stderr instead
-(devenv >= 2; the project must be up). With -f/--follow and no PROCESS, opens
-the same live view as `neals up` (routes header + scrolling logs); with a
+(devenv >= 2; the project must be up). With -f/--follow and no PROCESS, follows
+all process logs with name prefixes (same as `neals up`); with a
 PROCESS, follows its stdout/stderr in the terminal.")]
     Logs {
         #[arg(add = ArgValueCompleter::new(complete_projects))]

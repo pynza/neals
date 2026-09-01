@@ -1,21 +1,19 @@
 use crate::daemon_client::with_daemon;
-use crate::logs::{wait_for_log_file, LogFollower, LOG_TAIL_LINES};
+use crate::logs::{
+    format_process_line, wait_for_devenv_runtime, wait_for_log_file, LogFollower, ProcessLogMux,
+    LOG_TAIL_LINES,
+};
 use crate::style;
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use neals_common::{ProjectRuntime, Request, Response};
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
-use ratatui::Frame;
-use std::collections::VecDeque;
-use std::io::{self, IsTerminal};
-use std::time::{Duration, Instant};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use neals_common::{Registry, Request};
+use std::io::{self, IsTerminal, Write};
+use std::path::Path;
+use std::time::Duration;
 
-const MAX_LINES: usize = 2000;
 const TICK: Duration = Duration::from_millis(200);
-const STATUS_REFRESH: Duration = Duration::from_secs(1);
+const DISCOVER_EVERY: u8 = 5; // ~1s at 200ms tick
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveOutcome {
@@ -23,44 +21,104 @@ pub enum LiveOutcome {
     Stopped,
 }
 
+struct RawGuard;
+
+impl Drop for RawGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+    }
+}
+
 pub fn run_live_view(project: &str, from_start: bool) -> Result<LiveOutcome> {
     if !io::stdout().is_terminal() {
-        if from_start {
-            crate::logs::follow_project_logs(project)?;
-        } else {
-            crate::logs::print_project_logs(project, true)?;
-        }
-        return Ok(LiveOutcome::Detached);
+        return follow_plain(project, from_start);
     }
 
-    let path = wait_for_log_file(project)?;
-    let (mut follower, initial) = if from_start {
-        (LogFollower::open_at_end(&path)?, Vec::new())
-    } else {
-        LogFollower::open_with_tail(&path, LOG_TAIL_LINES)?
+    let project_path = resolve_project_path(project)?;
+    style::print_dim("following logs — Ctrl+Q detach, Ctrl+C/X stop");
+    enable_raw_mode().context("failed to enable raw mode")?;
+    let _guard = RawGuard;
+
+    let outcome = follow_loop(project, &project_path, from_start)?;
+    drop(_guard);
+
+    match outcome {
+        LiveOutcome::Detached => {
+            style::print_dim(&format!(
+                "detached from `{project}` (still running; `neals logs {project} -f` to reattach)"
+            ));
+        }
+        LiveOutcome::Stopped => {
+            style::print_ok(&format!("stopped `{project}`"));
+        }
+    }
+    Ok(outcome)
+}
+
+fn follow_plain(project: &str, from_start: bool) -> Result<LiveOutcome> {
+    let project_path = resolve_project_path(project)?;
+    let _ = follow_loop(project, &project_path, from_start)?;
+    Ok(LiveOutcome::Detached)
+}
+
+fn resolve_project_path(project: &str) -> Result<std::path::PathBuf> {
+    let registry = Registry::load()?;
+    match registry.get(project) {
+        Some(p) => Ok(p.path.clone()),
+        None => bail!("project `{project}` is not registered"),
+    }
+}
+
+fn follow_loop(project: &str, project_path: &Path, from_start: bool) -> Result<LiveOutcome> {
+    // Merged log appears first; devenv runtime / per-process logs may lag.
+    let _ = wait_for_log_file(project);
+    let mut mux = match wait_for_devenv_runtime(project_path) {
+        Ok(rt) => Some(ProcessLogMux::new(rt)),
+        Err(_) => None,
     };
 
-    let mut lines: VecDeque<String> = initial.into();
-    let mut meta = fetch_meta(project);
-    let mut last_status = Instant::now();
+    let mut merged: Option<LogFollower> = None;
+    let mut discover_ticks: u8 = 0;
+    let raw = io::stdout().is_terminal();
 
-    let mut terminal = ratatui::init();
-    let result = (|| -> Result<LiveOutcome> {
-        loop {
-            terminal.draw(|frame| draw(frame, project, &meta, &lines))?;
+    // Seed process followers, or fall back to the merged project log until they appear.
+    if let Some(mux) = mux.as_mut() {
+        let tail = if from_start {
+            None
+        } else {
+            Some(LOG_TAIL_LINES)
+        };
+        let initial = mux.refresh(tail)?;
+        for (name, line) in initial {
+            emit_line(raw, &format_process_line(&name, mux.width(), &line))?;
+        }
+    }
+    if mux.as_ref().map(|m| m.is_empty()).unwrap_or(true) {
+        let path = wait_for_log_file(project)?;
+        if from_start {
+            merged = Some(LogFollower::open_at_end(&path)?);
+        } else {
+            let (follower, lines) = LogFollower::open_with_tail(&path, LOG_TAIL_LINES)?;
+            for line in lines {
+                emit_line(raw, &line)?;
+            }
+            merged = Some(follower);
+        }
+    }
 
+    loop {
+        if raw {
             if event::poll(TICK)? {
                 if let Event::Key(key) = event::read()? {
                     if key.kind != KeyEventKind::Press {
                         continue;
                     }
                     match (key.code, key.modifiers) {
-                        (KeyCode::Char('c'), KeyModifiers::CONTROL)
-                        | (KeyCode::Char('q'), KeyModifiers::NONE)
-                        | (KeyCode::Esc, _) => {
+                        (KeyCode::Char('q'), KeyModifiers::CONTROL) => {
                             return Ok(LiveOutcome::Detached);
                         }
-                        (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
+                        (KeyCode::Char('c'), KeyModifiers::CONTROL)
+                        | (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
                             let _ = with_daemon(Request::Down {
                                 project: project.to_string(),
                             });
@@ -70,164 +128,51 @@ pub fn run_live_view(project: &str, from_start: bool) -> Result<LiveOutcome> {
                     }
                 }
             }
+        } else {
+            std::thread::sleep(TICK);
+        }
 
-            for line in follower.poll_lines()? {
-                push_line(&mut lines, line);
+        discover_ticks = discover_ticks.wrapping_add(1);
+        if discover_ticks % DISCOVER_EVERY == 0 {
+            if mux.is_none() {
+                if let Ok(rt) = neals_common::devenv::devenv_runtime(project_path) {
+                    mux = Some(ProcessLogMux::new(rt));
+                }
             }
-
-            if last_status.elapsed() >= STATUS_REFRESH {
-                meta = fetch_meta(project);
-                last_status = Instant::now();
-            }
-        }
-    })();
-
-    ratatui::restore();
-
-    match &result {
-        Ok(LiveOutcome::Detached) => {
-            style::print_dim(&format!(
-                "detached from `{project}` (still running; `neals logs {project} -f` to reattach)"
-            ));
-        }
-        Ok(LiveOutcome::Stopped) => {
-            style::print_ok(&format!("stopped `{project}`"));
-        }
-        Err(_) => {}
-    }
-
-    result
-}
-
-fn push_line(buf: &mut VecDeque<String>, line: String) {
-    buf.push_back(line);
-    while buf.len() > MAX_LINES {
-        buf.pop_front();
-    }
-}
-
-fn fetch_meta(project: &str) -> Option<ProjectRuntime> {
-    match with_daemon(Request::Status) {
-        Ok(Response::Status { projects }) => projects.into_iter().find(|p| p.name == project),
-        _ => None,
-    }
-}
-
-fn draw(frame: &mut Frame, project: &str, meta: &Option<ProjectRuntime>, lines: &VecDeque<String>) {
-    let area = frame.area();
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(header_height(meta)),
-            Constraint::Min(3),
-            Constraint::Length(1),
-        ])
-        .split(area);
-
-    let header = Paragraph::new(header_text(project, meta))
-        .style(Style::default().fg(Color::Cyan))
-        .block(
-            Block::default()
-                .borders(Borders::BOTTOM)
-                .title(Span::styled(
-                    " neals ",
-                    Style::default()
-                        .fg(Color::Magenta)
-                        .add_modifier(Modifier::BOLD),
-                )),
-        )
-        .wrap(Wrap { trim: false });
-    frame.render_widget(header, chunks[0]);
-
-    let visible = visible_lines(lines, chunks[1].height as usize);
-    let items: Vec<ListItem> = visible
-        .iter()
-        .map(|l| ListItem::new(Line::raw(l.as_str())))
-        .collect();
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::NONE)
-            .title(Span::styled(" logs ", Style::default().fg(Color::DarkGray))),
-    );
-    frame.render_widget(list, chunks[1]);
-
-    let footer = Paragraph::new(Line::from(vec![
-        Span::styled("Ctrl+C", Style::default().fg(Color::Yellow)),
-        Span::raw("/"),
-        Span::styled("q", Style::default().fg(Color::Yellow)),
-        Span::raw(" detach  "),
-        Span::styled("Ctrl+X", Style::default().fg(Color::Red)),
-        Span::raw(" stop project"),
-    ]))
-    .style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(footer, chunks[2]);
-}
-
-fn header_height(meta: &Option<ProjectRuntime>) -> u16 {
-    let routes = meta.as_ref().map(|m| m.routes.len()).unwrap_or(0);
-    (2 + routes.max(1) + 1).min(12) as u16
-}
-
-fn header_text(project: &str, meta: &Option<ProjectRuntime>) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    match meta {
-        Some(m) => {
-            out.push(Line::from(vec![
-                Span::styled(
-                    format!(" {project} "),
-                    Style::default()
-                        .fg(Color::Magenta)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(format!("pid {}  up {}", m.pid, format_uptime(m.uptime_secs))),
-            ]));
-            if m.routes.is_empty() {
-                out.push(Line::from(Span::styled(
-                    "  (no services declared)",
-                    Style::default().fg(Color::DarkGray),
-                )));
-            } else {
-                for route in &m.routes {
-                    out.push(Line::from(vec![
-                        Span::raw("  → "),
-                        Span::styled(route.clone(), Style::default().fg(Color::Green)),
-                    ]));
+            if let Some(mux) = mux.as_mut() {
+                let was_empty = mux.is_empty();
+                let initial = mux.refresh(None)?;
+                // Once per-process logs exist, drop the merged follower to avoid dupes.
+                if was_empty && !mux.is_empty() {
+                    merged = None;
+                }
+                for (name, line) in initial {
+                    emit_line(raw, &format_process_line(&name, mux.width(), &line))?;
                 }
             }
         }
-        None => {
-            out.push(Line::from(vec![
-                Span::styled(
-                    format!(" {project} "),
-                    Style::default()
-                        .fg(Color::Magenta)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("not running", Style::default().fg(Color::Yellow)),
-            ]));
-            out.push(Line::from(Span::styled(
-                "  waiting for status…",
-                Style::default().fg(Color::DarkGray),
-            )));
+
+        if let Some(mux) = mux.as_mut() {
+            let width = mux.width();
+            for (name, line) in mux.poll_lines()? {
+                emit_line(raw, &format_process_line(&name, width, &line))?;
+            }
+        }
+        if let Some(follower) = merged.as_mut() {
+            for line in follower.poll_lines()? {
+                emit_line(raw, &line)?;
+            }
         }
     }
-    out
 }
 
-fn visible_lines(lines: &VecDeque<String>, height: usize) -> Vec<&String> {
-    if height == 0 {
-        return Vec::new();
-    }
-    let skip = lines.len().saturating_sub(height);
-    lines.iter().skip(skip).collect()
-}
-
-fn format_uptime(secs: u64) -> String {
-    if secs < 60 {
-        format!("{secs}s")
-    } else if secs < 3600 {
-        format!("{}m {}s", secs / 60, secs % 60)
+fn emit_line(raw: bool, line: &str) -> Result<()> {
+    let mut out = io::stdout();
+    if raw {
+        write!(out, "{line}\r\n")?;
     } else {
-        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+        writeln!(out, "{line}")?;
     }
+    out.flush().ok();
+    Ok(())
 }

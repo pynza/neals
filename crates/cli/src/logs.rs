@@ -1,5 +1,7 @@
 use anyhow::{bail, Context, Result};
 use neals_common::{ensure_dir, state_dir};
+use owo_colors::{AnsiColors, OwoColorize};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -9,6 +11,17 @@ use std::time::Duration;
 pub const LOG_TAIL_LINES: usize = 100;
 const TAIL_BLOCK: u64 = 8 * 1024;
 const FOLLOW_POLL: Duration = Duration::from_millis(200);
+
+const PROCESS_COLORS: [AnsiColors; 8] = [
+    AnsiColors::Cyan,
+    AnsiColors::Yellow,
+    AnsiColors::Green,
+    AnsiColors::Magenta,
+    AnsiColors::Blue,
+    AnsiColors::Red,
+    AnsiColors::BrightCyan,
+    AnsiColors::BrightYellow,
+];
 
 pub fn project_log_path(project: &str) -> Result<PathBuf> {
     let dir = state_dir()?;
@@ -183,23 +196,105 @@ pub fn print_project_logs(project: &str, follow: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn follow_project_logs(project: &str) -> Result<()> {
-    let path = wait_for_log_file(project)?;
-    let mut follower = LogFollower::open_at_end(&path)?;
-    loop {
-        for line in follower.poll_lines()? {
-            println!("{line}");
-        }
-        io::stdout().flush().ok();
-        thread::sleep(FOLLOW_POLL);
-    }
-}
-
 fn process_log_file(runtime: &Path, process: &str, stream: &str) -> PathBuf {
     runtime
         .join("processes")
         .join("logs")
         .join(format!("{process}.{stream}.log"))
+}
+
+pub fn process_color_index(name: &str) -> usize {
+    let mut h = 0usize;
+    for b in name.bytes() {
+        h = h.wrapping_mul(31).wrapping_add(b as usize);
+    }
+    h % PROCESS_COLORS.len()
+}
+
+pub fn format_process_line(name: &str, width: usize, line: &str) -> String {
+    let width = width.max(name.len()).max(1);
+    let prefix = format!("{name:<width$}");
+    if crate::style::use_color() {
+        let color = PROCESS_COLORS[process_color_index(name)];
+        format!("{} | {line}", prefix.color(color))
+    } else {
+        format!("{prefix} | {line}")
+    }
+}
+
+pub struct ProcessLogMux {
+    runtime: PathBuf,
+    known: HashSet<String>,
+    streams: Vec<(String, LogFollower)>,
+    width: usize,
+}
+
+impl ProcessLogMux {
+    pub fn new(runtime: PathBuf) -> Self {
+        Self {
+            runtime,
+            known: HashSet::new(),
+            streams: Vec::new(),
+            width: 1,
+        }
+    }
+
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.streams.is_empty()
+    }
+
+    pub fn refresh(&mut self, tail: Option<usize>) -> Result<Vec<(String, String)>> {
+        let mut initial = Vec::new();
+        for name in process_log_names(&self.runtime) {
+            if !self.known.insert(name.clone()) {
+                continue;
+            }
+            self.width = self.width.max(name.len());
+            for stream in ["stdout", "stderr"] {
+                let path = process_log_file(&self.runtime, &name, stream);
+                if !path.is_file() {
+                    continue;
+                }
+                if let Some(n) = tail {
+                    let (follower, lines) = LogFollower::open_with_tail(&path, n)?;
+                    for line in lines {
+                        initial.push((name.clone(), line));
+                    }
+                    self.streams.push((name.clone(), follower));
+                } else {
+                    self.streams
+                        .push((name.clone(), LogFollower::open_at_end(&path)?));
+                }
+            }
+        }
+        Ok(initial)
+    }
+
+    pub fn poll_lines(&mut self) -> Result<Vec<(String, String)>> {
+        let mut out = Vec::new();
+        for (name, follower) in &mut self.streams {
+            for line in follower.poll_lines()? {
+                out.push((name.clone(), line));
+            }
+        }
+        Ok(out)
+    }
+}
+
+pub fn wait_for_devenv_runtime(project_path: &Path) -> Result<PathBuf> {
+    let mut last_err = None;
+    for _ in 0..40 {
+        match neals_common::devenv::devenv_runtime(project_path) {
+            Ok(path) => return Ok(path),
+            Err(e) => last_err = Some(e),
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("devenv runtime unavailable")))
 }
 
 pub fn process_log_names(runtime: &Path) -> Vec<String> {
@@ -409,5 +504,44 @@ mod tests {
     #[test]
     fn running_process_names_missing_base_is_empty() {
         assert!(running_process_names(&temp_path("no-xdg")).is_empty());
+    }
+
+    #[test]
+    fn format_process_line_pads_and_separates() {
+        let line = format_process_line("redis", 8, "ready");
+        assert!(line.contains("redis"), "{line}");
+        assert!(line.contains(" | "), "{line}");
+        assert!(line.ends_with("ready"), "{line}");
+    }
+
+    #[test]
+    fn process_color_index_is_stable() {
+        assert_eq!(process_color_index("be"), process_color_index("be"));
+    }
+
+    #[test]
+    fn mux_discovers_and_polls() {
+        let runtime = temp_path("mux");
+        let dir = runtime.join("processes").join("logs");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.stdout.log"), "one\n").unwrap();
+
+        let mut mux = ProcessLogMux::new(runtime.clone());
+        let initial = mux.refresh(Some(10)).unwrap();
+        assert_eq!(initial, vec![("a".into(), "one".into())]);
+        assert_eq!(mux.width(), 1);
+
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(dir.join("a.stdout.log"))
+            .unwrap();
+        writeln!(file, "two").unwrap();
+        drop(file);
+        assert_eq!(mux.poll_lines().unwrap(), vec![("a".into(), "two".into())]);
+
+        fs::write(dir.join("backend.stdout.log"), "").unwrap();
+        assert!(mux.refresh(None).unwrap().is_empty());
+        assert_eq!(mux.width(), "backend".len());
+        let _ = fs::remove_dir_all(&runtime);
     }
 }

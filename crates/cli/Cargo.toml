@@ -15,4 +15,3 @@ comfy-table = "7"
 crossterm = "0.29.0"
 neals-common = { path = "../common" }
 owo-colors = "4.3.0"
-ratatui = "0.30.2"
