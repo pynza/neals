@@ -44,25 +44,52 @@ impl CaddyManager {
         let state = state_dir()?;
         ensure_dir(&state)?;
 
-        let admin_sock = runtime.join("caddy-admin.sock");
-        let config_path = state.join("caddy.json");
-        let log_path = state.join("caddy.log");
-        let http_addr = http_listen_addr()?;
-        let loose = std::env::var_os("NEALS_CADDY_CMD").is_some();
+        let mut manager = Self {
+            child: None,
+            admin_sock: runtime.join("caddy-admin.sock"),
+            config_path: state.join("caddy.json"),
+            http_addr: http_listen_addr()?,
+            loose: std::env::var_os("NEALS_CADDY_CMD").is_some(),
+        };
+        manager.respawn().await?;
+        Ok(manager)
+    }
 
-        if admin_sock.exists() {
-            let _ = tokio::fs::remove_file(&admin_sock).await;
+    async fn wait_admin_ready(&self) -> Result<()> {
+        for _ in 0..50 {
+            if self.admin_reachable().await {
+                return Ok(());
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        bail!(
+            "caddy admin socket not ready: {} (listen {})",
+            self.admin_sock.display(),
+            self.http_addr
+        )
+    }
+
+    async fn admin_reachable(&self) -> bool {
+        !self.admin_sock.as_os_str().is_empty()
+            && UnixStream::connect(&self.admin_sock).await.is_ok()
+    }
+
+    async fn respawn(&mut self) -> Result<()> {
+        self.reap_child().await;
+        if self.admin_sock.exists() {
+            let _ = tokio::fs::remove_file(&self.admin_sock).await;
         }
 
-        let initial = build_caddy_config(&admin_sock, &http_addr, &log_path, &[]);
-        write_config(&config_path, &initial)?;
+        let log_path = state_dir()?.join("caddy.log");
+        let initial = build_caddy_config(&self.admin_sock, &self.http_addr, &log_path, &[]);
+        write_config(&self.config_path, &initial)?;
 
         let (program, mut args) = caddy_command();
         if args.is_empty() && program == "caddy" {
             args = vec![
                 "run".into(),
                 "--config".into(),
-                config_path.display().to_string(),
+                self.config_path.display().to_string(),
             ];
         }
 
@@ -83,36 +110,23 @@ impl CaddyManager {
         let child = cmd
             .spawn()
             .with_context(|| format!("failed to spawn `{program}`"))?;
+        self.child = Some(child);
 
-        let manager = Self {
-            child: Some(child),
-            admin_sock,
-            config_path,
-            http_addr,
-            loose,
-        };
-
-        if !manager.loose {
-            manager.wait_admin_ready().await?;
+        if !self.loose {
+            self.wait_admin_ready().await?;
         }
-
-        Ok(manager)
+        Ok(())
     }
 
-    async fn wait_admin_ready(&self) -> Result<()> {
-        for _ in 0..50 {
-            if self.admin_sock.exists() {
-                if UnixStream::connect(&self.admin_sock).await.is_ok() {
-                    return Ok(());
+    async fn reap_child(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            match child.id() {
+                Some(pid) => crate::state::stop_process_group(pid, &mut child).await,
+                None => {
+                    let _ = child.wait().await;
                 }
             }
-            sleep(Duration::from_millis(100)).await;
         }
-        bail!(
-            "caddy admin socket not ready: {} (listen {})",
-            self.admin_sock.display(),
-            self.http_addr
-        )
     }
 
     pub fn http_addr(&self) -> &str {
@@ -135,19 +149,22 @@ impl CaddyManager {
                 eprintln!("caddy apply skipped: {err:#}");
                 Ok(())
             }
-            Err(err) => Err(err),
+            Err(err) => {
+                if self.admin_reachable().await {
+                    return Err(err);
+                }
+                eprintln!("caddy admin down ({err:#}); restarting");
+                self.respawn()
+                    .await
+                    .context("failed to restart caddy after admin disconnect")?;
+                write_config(&self.config_path, &config)?;
+                post_load(&self.admin_sock, &body).await
+            }
         }
     }
 
     pub async fn shutdown(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            match child.id() {
-                Some(pid) => crate::state::stop_process_group(pid, &mut child).await,
-                None => {
-                    let _ = child.wait().await;
-                }
-            }
-        }
+        self.reap_child().await;
         if !self.admin_sock.as_os_str().is_empty() {
             let _ = tokio::fs::remove_file(&self.admin_sock).await;
         }
@@ -370,6 +387,65 @@ pub fn cleanup_neals_dir(project_dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[tokio::test]
+    async fn apply_routes_restarts_caddy_when_admin_dies() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if std::process::Command::new("caddy")
+            .arg("version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+            == false
+        {
+            eprintln!("skip: caddy not on PATH");
+            return;
+        }
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "neals-caddy-restart-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        std::fs::create_dir_all(root.join("state")).unwrap();
+        std::fs::create_dir_all(root.join("runtime")).unwrap();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        std::env::set_var("XDG_CONFIG_HOME", root.join("config"));
+        std::env::set_var("XDG_STATE_HOME", root.join("state"));
+        std::env::set_var("XDG_RUNTIME_DIR", root.join("runtime"));
+        std::env::set_var("NEALS_CADDY_HTTP_ADDR", format!("127.0.0.1:{port}"));
+        std::env::remove_var("NEALS_CADDY_CMD");
+
+        let mut mgr = CaddyManager::start().await.expect("start caddy");
+        assert!(mgr.admin_reachable().await);
+
+        let mut child = mgr.child.take().expect("child");
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+
+        mgr.apply_routes(&[])
+            .await
+            .expect("apply_routes should restart caddy");
+        assert!(mgr.admin_reachable().await);
+
+        mgr.shutdown().await;
+        let _ = std::fs::remove_dir_all(&root);
+        std::env::remove_var("NEALS_CADDY_HTTP_ADDR");
+    }
 
     #[test]
     fn build_config_contains_unix_and_tcp_upstreams() {
