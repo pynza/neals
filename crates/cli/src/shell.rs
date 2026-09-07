@@ -5,7 +5,11 @@ use neals_common::{ensure_dir, state_dir, Request, Response};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitCode, ExitStatus, Stdio};
+use std::thread;
+use std::time::Duration;
+
+const WATCH_TICK: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShellKind {
@@ -22,7 +26,7 @@ pub fn enter_project_shell(project: &str, path: &Path) -> Result<ExitCode> {
     match kind {
         ShellKind::Bash => {
             let rc = write_bash_rc(project)?;
-            run_in_netns(
+            run_watched_shell(
                 path,
                 project,
                 netns_pid,
@@ -34,29 +38,30 @@ pub fn enter_project_shell(project: &str, path: &Path) -> Result<ExitCode> {
                     "--rcfile",
                     rc.to_str().context("rc path not utf-8")?,
                 ],
+                &[],
             )
         }
         ShellKind::Zsh => {
             let zdot = write_zsh_dir(project)?;
-            let status = nsenter_devenv(
+            run_watched_shell(
                 path,
                 project,
                 netns_pid,
                 &["--quiet", "shell", &shell_path, "-i"],
                 &[("ZDOTDIR", zdot.as_os_str())],
-            )?;
-            Ok(exit_code_from_status(status))
+            )
         }
         ShellKind::Other => {
             style::print_warn(&format!(
                 "branded prompt not configured for `{}`",
                 shell_path
             ));
-            run_in_netns(
+            run_watched_shell(
                 path,
                 project,
                 netns_pid,
                 &["--quiet", "shell", &shell_path, "-i"],
+                &[],
             )
         }
     }
@@ -130,6 +135,9 @@ if [ -t 1 ] && [ -z "${{NO_COLOR:-}}" ]; then
 else
   PS1='neals:{project} \w \$ '
 fi
+if [ -t 1 ]; then
+  clear 2>/dev/null || printf '\033[H\033[2J'
+fi
 "#
     );
     fs::write(&path, content).with_context(|| format!("failed to write {}", path.display()))?;
@@ -150,6 +158,9 @@ if [[ -o interactive ]] && [[ -z "${{NO_COLOR:-}}" ]]; then
 else
   PROMPT="neals:{project} %~ %# "
 fi
+if [[ -t 1 ]]; then
+  clear 2>/dev/null || printf '\033[H\033[2J'
+fi
 "#
     );
     let zshrc = dir.join(".zshrc");
@@ -157,9 +168,60 @@ fi
     Ok(dir)
 }
 
-fn run_in_netns(dir: &Path, project: &str, netns_pid: u32, args: &[&str]) -> Result<ExitCode> {
-    let status = nsenter_devenv(dir, project, netns_pid, args, &[])?;
-    Ok(exit_code_from_status(status))
+fn run_watched_shell(
+    dir: &Path,
+    project: &str,
+    netns_pid: u32,
+    devenv_args: &[&str],
+    extra_env: &[(&str, &std::ffi::OsStr)],
+) -> Result<ExitCode> {
+    let mut child = spawn_nsenter_devenv(dir, project, netns_pid, devenv_args, extra_env)?;
+
+    loop {
+        match child.try_wait().context("waiting for project shell")? {
+            Some(status) => return Ok(exit_code_from_status(status)),
+            None => {
+                if !project_session_alive(project, netns_pid) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    style::eprint_dim(&format!(
+                        "`{project}` stopped — left the project shell"
+                    ));
+                    return Ok(ExitCode::SUCCESS);
+                }
+                thread::sleep(WATCH_TICK);
+            }
+        }
+    }
+}
+
+fn project_session_alive(project: &str, netns_pid: u32) -> bool {
+    if !Path::new(&format!("/proc/{netns_pid}")).exists() {
+        return false;
+    }
+    match with_daemon(Request::Status) {
+        Ok(Response::Status { projects }) => projects.iter().any(|p| p.name == project),
+        _ => true,
+    }
+}
+
+fn spawn_nsenter_devenv(
+    dir: &Path,
+    project: &str,
+    netns_pid: u32,
+    devenv_args: &[&str],
+    extra_env: &[(&str, &std::ffi::OsStr)],
+) -> Result<Child> {
+    let mut cmd = nsenter_command(dir, project, netns_pid);
+    cmd.args(devenv_args)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    cmd.spawn()
+        .context("failed to run `nsenter`/`devenv` (is util-linux + devenv on PATH?)")
 }
 
 fn nsenter_command(dir: &Path, project: &str, netns_pid: u32) -> Command {
@@ -178,25 +240,6 @@ fn nsenter_command(dir: &Path, project: &str, netns_pid: u32) -> Command {
     .current_dir(dir)
     .env("NEALS_PROJECT", project);
     cmd
-}
-
-fn nsenter_devenv(
-    dir: &Path,
-    project: &str,
-    netns_pid: u32,
-    devenv_args: &[&str],
-    extra_env: &[(&str, &std::ffi::OsStr)],
-) -> Result<ExitStatus> {
-    let mut cmd = nsenter_command(dir, project, netns_pid);
-    cmd.args(devenv_args)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-    for (k, v) in extra_env {
-        cmd.env(k, v);
-    }
-    cmd.status()
-        .context("failed to run `nsenter`/`devenv` (is util-linux + devenv on PATH?)")
 }
 
 fn nsenter_devenv_stdin(
@@ -228,5 +271,35 @@ fn exit_code_from_status(status: ExitStatus) -> ExitCode {
         Some(0) => ExitCode::SUCCESS,
         Some(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
         None => ExitCode::FAILURE,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bash_rc_clears_and_sets_project() {
+        let dir = std::env::temp_dir().join(format!(
+            "neals-bashrc-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("XDG_STATE_HOME", &dir);
+        let path = write_bash_rc("demo").unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("NEALS_PROJECT=\"demo\""));
+        assert!(text.contains("clear") || text.contains("\\033[H\\033[2J"));
+        let _ = fs::remove_dir_all(&dir);
+        std::env::remove_var("XDG_STATE_HOME");
+    }
+
+    #[test]
+    fn project_session_alive_false_when_netns_missing() {
+        assert!(!project_session_alive("anything", 4_294_967_293));
     }
 }

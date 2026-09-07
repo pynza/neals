@@ -183,8 +183,9 @@ Process lines are prefixed like `be       | …` / `fe       | …` (devenv ≥ 
 ### Project shell
 
 `neals bash` respects `$SHELL`, runs devenv quietly, and for bash/zsh sets a
-short prompt `neals:<project> …`. Use `neals status` (or the routes printed
-by `neals up`) for services.
+short prompt `neals:<project> …`, clears the screen on entry, and leaves the
+shell if the project is stopped (e.g. `neals down` from another tab). Use
+`neals status` (or the routes printed by `neals up`) for services.
 
 ## Directories & data
 

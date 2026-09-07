@@ -94,7 +94,11 @@ in the project's network namespace (project must be
 Uses
 .BR $SHELL .
 bash/zsh get a short prompt
-.BI neals: name\fR.
+.BI neals: name\fR,
+clear the screen on entry, and exit if the project is stopped
+(e.g.
+.B neals down
+from another tab).
 .TP
 .BI exec " name \-\- command\&..."
 Run a command inside the project netns and devenv.
