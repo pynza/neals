@@ -2,6 +2,7 @@ mod daemon_client;
 mod doctor;
 mod live;
 mod logs;
+mod refresh;
 mod shell;
 mod style;
 
@@ -108,6 +109,22 @@ Use -d/--detach to skip following logs.")]
     Down {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
+    },
+
+    #[command(long_about = "\
+Soft-refresh a project: stop if running, re-evaluate the devenv environment.\n\
+Does not start the project — run `neals up` afterwards.\n\n\
+--update runs `devenv update` (modifies devenv.lock) before evaluation.\n\
+--hard also deletes managed state (.devenv, .neals, project runtime) after\n\
+confirmation (use -y/--yes to skip). Does not remove source, devenv.lock,\n\
+.env, or external volumes.")]
+    Refresh {
+        #[arg(add = ArgValueCompleter::new(complete_projects))]
+        project: String,
+        #[arg(long = "update")]
+        update: bool,
+        #[arg(long = "hard")]
+        hard: bool,
     },
 
     Status,
@@ -221,6 +238,11 @@ fn run() -> Result<ExitCode> {
             cmd_down(&project)?;
             Ok(ExitCode::SUCCESS)
         }
+        Commands::Refresh {
+            project,
+            update,
+            hard,
+        } => refresh::run(&project, update, hard, cli.yes),
         Commands::Status => {
             cmd_status()?;
             Ok(ExitCode::SUCCESS)
@@ -258,7 +280,7 @@ fn run() -> Result<ExitCode> {
     }
 }
 
-fn confirm(prompt: &str, yes: bool) -> Result<bool> {
+pub(crate) fn confirm(prompt: &str, yes: bool) -> Result<bool> {
     if yes {
         return Ok(true);
     }

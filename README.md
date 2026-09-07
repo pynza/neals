@@ -159,6 +159,7 @@ Reference `devenv.nix` layouts (not full apps): see [examples/](examples/).
 | `neals prune` | Drop ghost entries (missing paths) |
 | `neals up <name> [-d]` | Start project; follow process logs unless `-d` |
 | `neals down <name>` | Stop project |
+| `neals refresh <name>` | Soft re-eval (`--update`, `--hard`); does not start |
 | `neals status` | Running projects, PIDs, services (real ports) |
 | `neals logs <name> [-f]` | Tail logs; `-f` follows all processes |
 | `neals bash <name>` | Shell in the project's netns (project must be up) |
@@ -179,6 +180,19 @@ While attached via `neals up` or `neals logs -f` (no PROCESS):
 | `Ctrl+C` or `Ctrl+X` | Stop the project; other follow tabs exit too |
 
 Process lines are prefixed like `be       | …` / `fe       | …` (devenv ≥ 2).
+
+### Refresh
+
+`neals refresh <name>` stops the project if needed and re-evaluates the devenv
+environment.
+
+| Flag | Effect |
+|------|--------|
+| (default) | Soft: no lockfile change, no wipe |
+| `--update` | Run `devenv update` (modifies `devenv.lock`) before eval |
+| `--hard` | After confirm (`-y` to skip), delete `.devenv`, `.neals`, and managed runtime; DB data under `.devenv` is wiped |
+
+`--hard` never removes project source, `devenv.lock`, `.env`, or external volumes.
 
 ### Project shell
 

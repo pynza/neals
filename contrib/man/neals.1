@@ -78,6 +78,27 @@ stops the project (other follow tabs exit too).
 .BI down " name"
 Stop a running project.
 .TP
+.BI refresh " name " [ \-\-update ] [ \-\-hard ]
+Stop if running and re-evaluate the devenv environment.
+Does not start the project; run
+.B neals up
+afterwards.
+.B \-\-update
+runs
+.B devenv update
+(modifies
+.BR devenv.lock ).
+.B \-\-hard
+deletes managed state
+.RI ( .devenv ,
+.IR .neals ,
+project runtime) after confirmation
+.RI ( \-y
+skips the prompt); does not remove source,
+.BR devenv.lock ,
+.BR .env ,
+or external volumes.
+.TP
 .B status
 Show running projects, PIDs, and routes.
 .TP
