@@ -191,7 +191,7 @@ by `neals up`) for services.
 | Path | Role |
 |------|------|
 | `~/.config/neals/projects.json` | Project registry (name → path) |
-| `~/.local/state/neals/<project>.log` | Project stdout/stderr from `devenv up` |
+| `~/.local/state/neals/<project>.log` | Project stdout/stderr from `devenv up --mode all` |
 | `~/.local/state/neals/nealsd.log` | Ad-hoc daemon log |
 | `~/.local/state/neals/caddy.json` | Generated Caddy config |
 | `~/.local/state/neals/caddy.log` | Caddy log |

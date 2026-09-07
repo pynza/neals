@@ -59,11 +59,14 @@
     listen = "127.0.0.1:8080";
   };
 
-  processes.be.exec = ''
-    cd be
-    [ -d vendor ] || composer install
-    exec php artisan serve --host 127.0.0.1 --port 8000
-  '';
+  processes.be = {
+    after = [ "devenv:mysql:configure" ];
+    exec = ''
+      cd be
+      [ -d vendor ] || composer install
+      exec php artisan serve --host 127.0.0.1 --port 8000
+    '';
+  };
 
   processes.fe.exec = ''
     cd fe

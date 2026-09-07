@@ -309,6 +309,9 @@ fn up_command() -> (String, Vec<String>) {
             let program = parts.next().unwrap_or_else(|| "devenv".into());
             (program, parts.collect())
         }
-        _ => ("devenv".into(), vec!["up".into()]),
+        _ => (
+            "devenv".into(),
+            vec!["up".into(), "--mode".into(), "all".into()],
+        ),
     }
 }
