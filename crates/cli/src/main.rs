@@ -13,7 +13,7 @@ use clap_complete::{
 };
 use comfy_table::Cell;
 use daemon_client::with_daemon;
-use live::run_live_view;
+use live::{run_live_view, LiveOutcome};
 use neals_common::{
     resolve_project_name, Project, ProjectName, Registry, Request, Response,
 };
@@ -46,7 +46,8 @@ Directories:
 
 Keys while following logs (neals up / logs -f):
   Ctrl+Q        detach (project keeps running)
-  Ctrl+C / X    stop the project
+  Ctrl+B        enter project shell (same as `neals bash`)
+  Ctrl+C / X    stop the project (other follow tabs exit too)
 ";
 
 #[derive(Parser)]
@@ -94,7 +95,8 @@ project to ~/.config/neals/projects.json.")]
     #[command(long_about = "\
 Starts the project under nealsd, prints HTTP routes, then follows process logs
 in the terminal.\n\n\
-Ctrl+Q detach (keeps running). Ctrl+C / Ctrl+X stop the project.\n\
+Ctrl+Q detach (keeps running). Ctrl+B enter the project shell.\n\
+Ctrl+C / Ctrl+X stop the project (other follow tabs exit too).\n\
 Use -d/--detach to skip following logs.")]
     Up {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
@@ -214,10 +216,7 @@ fn run() -> Result<ExitCode> {
             cmd_prune(cli.yes)?;
             Ok(ExitCode::SUCCESS)
         }
-        Commands::Up { project, detach } => {
-            cmd_up(&project, detach)?;
-            Ok(ExitCode::SUCCESS)
-        }
+        Commands::Up { project, detach } => cmd_up(&project, detach),
         Commands::Down { project } => {
             cmd_down(&project)?;
             Ok(ExitCode::SUCCESS)
@@ -237,7 +236,7 @@ fn run() -> Result<ExitCode> {
                     logs::print_process_logs(&path, process, follow)?;
                 }
                 None if follow => {
-                    let _ = run_live_view(&project, false)?;
+                    return after_live_view(&project, run_live_view(&project, false)?);
                 }
                 None => logs::print_project_logs(&project, false)?,
             }
@@ -399,7 +398,7 @@ fn cmd_prune(yes: bool) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn cmd_up(project: &str, detach: bool) -> Result<()> {
+pub(crate) fn cmd_up(project: &str, detach: bool) -> Result<ExitCode> {
     match with_daemon(Request::Up {
         project: project.to_string(),
     })? {
@@ -416,13 +415,22 @@ pub(crate) fn cmd_up(project: &str, detach: bool) -> Result<()> {
                 style::print_dim(&format!(
                     "detached; use `neals logs {project} -f` to follow"
                 ));
-                return Ok(());
+                return Ok(ExitCode::SUCCESS);
             }
-            let _ = run_live_view(project, true)?;
-            Ok(())
+            after_live_view(project, run_live_view(project, true)?)
         }
         Response::Error { message } => bail!("{message}"),
         other => bail!("unexpected response from nealsd: {other:?}"),
+    }
+}
+
+fn after_live_view(project: &str, outcome: LiveOutcome) -> Result<ExitCode> {
+    match outcome {
+        LiveOutcome::Shell => {
+            let path = project_path(project)?;
+            shell::enter_project_shell(project, &path)
+        }
+        _ => Ok(ExitCode::SUCCESS),
     }
 }
 

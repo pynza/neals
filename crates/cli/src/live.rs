@@ -7,7 +7,7 @@ use crate::style;
 use anyhow::{bail, Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-use neals_common::{Registry, Request};
+use neals_common::{Registry, Request, Response};
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 use std::time::Duration;
@@ -19,6 +19,8 @@ const DISCOVER_EVERY: u8 = 5; // ~1s at 200ms tick
 pub enum LiveOutcome {
     Detached,
     Stopped,
+    Exited,
+    Shell,
 }
 
 struct RawGuard;
@@ -35,7 +37,7 @@ pub fn run_live_view(project: &str, from_start: bool) -> Result<LiveOutcome> {
     }
 
     let project_path = resolve_project_path(project)?;
-    style::print_dim("following logs — Ctrl+Q detach, Ctrl+C/X stop");
+    style::print_dim("following logs — Ctrl+Q detach, Ctrl+B shell, Ctrl+C/X stop");
     enable_raw_mode().context("failed to enable raw mode")?;
     let _guard = RawGuard;
 
@@ -51,14 +53,19 @@ pub fn run_live_view(project: &str, from_start: bool) -> Result<LiveOutcome> {
         LiveOutcome::Stopped => {
             style::print_ok(&format!("stopped `{project}`"));
         }
+        LiveOutcome::Exited => {
+            style::print_dim(&format!("`{project}` is no longer running"));
+        }
+        LiveOutcome::Shell => {
+            style::print_dim(&format!("entering `{project}` shell"));
+        }
     }
     Ok(outcome)
 }
 
 fn follow_plain(project: &str, from_start: bool) -> Result<LiveOutcome> {
     let project_path = resolve_project_path(project)?;
-    let _ = follow_loop(project, &project_path, from_start)?;
-    Ok(LiveOutcome::Detached)
+    follow_loop(project, &project_path, from_start)
 }
 
 fn resolve_project_path(project: &str) -> Result<std::path::PathBuf> {
@@ -66,6 +73,15 @@ fn resolve_project_path(project: &str) -> Result<std::path::PathBuf> {
     match registry.get(project) {
         Some(p) => Ok(p.path.clone()),
         None => bail!("project `{project}` is not registered"),
+    }
+}
+
+fn project_is_running(project: &str) -> Option<bool> {
+    match with_daemon(Request::Status) {
+        Ok(Response::Status { projects }) => {
+            Some(projects.iter().any(|p| p.name == project))
+        }
+        _ => None,
     }
 }
 
@@ -117,6 +133,9 @@ fn follow_loop(project: &str, project_path: &Path, from_start: bool) -> Result<L
                         (KeyCode::Char('q'), KeyModifiers::CONTROL) => {
                             return Ok(LiveOutcome::Detached);
                         }
+                        (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
+                            return Ok(LiveOutcome::Shell);
+                        }
                         (KeyCode::Char('c'), KeyModifiers::CONTROL)
                         | (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
                             let _ = with_daemon(Request::Down {
@@ -134,6 +153,9 @@ fn follow_loop(project: &str, project_path: &Path, from_start: bool) -> Result<L
 
         discover_ticks = discover_ticks.wrapping_add(1);
         if discover_ticks % DISCOVER_EVERY == 0 {
+            if project_is_running(project) == Some(false) {
+                return Ok(LiveOutcome::Exited);
+            }
             if mux.is_none() {
                 if let Ok(rt) = neals_common::devenv::devenv_runtime(project_path) {
                     mux = Some(ProcessLogMux::new(rt));

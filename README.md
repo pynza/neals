@@ -140,7 +140,8 @@ neals register
 neals doctor
 neals up demo          # prints routes, then follows process logs
 # Ctrl+Q      → detach (keeps running)
-# Ctrl+C / X  → stop project
+# Ctrl+B      → enter project shell
+# Ctrl+C / X  → stop project (other follow tabs exit)
 neals status
 neals bash demo        # same netns as the running project (must be up)
 neals down demo
@@ -174,7 +175,8 @@ While attached via `neals up` or `neals logs -f` (no PROCESS):
 | Key | Action |
 |-----|--------|
 | `Ctrl+Q` | Detach; project keeps running |
-| `Ctrl+C` or `Ctrl+X` | Stop the project and leave |
+| `Ctrl+B` | Enter project shell (`neals bash`) |
+| `Ctrl+C` or `Ctrl+X` | Stop the project; other follow tabs exit too |
 
 Process lines are prefixed like `be       | …` / `fe       | …` (devenv ≥ 2).
 
