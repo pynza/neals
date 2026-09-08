@@ -149,6 +149,14 @@ PROCESS, follows its stdout/stderr in the terminal.")]
 
     Doctor,
 
+    #[command(long_about = "\
+Prints `devenv info` for the registered project (host path; project need not\n\
+be up). Useful when debugging environment / nix evaluation.")]
+    Info {
+        #[arg(add = ArgValueCompleter::new(complete_projects))]
+        project: String,
+    },
+
     #[command(name = "bash", long_about = "\
 Enters a quiet `devenv shell` using $SHELL inside the project's network
 namespace (project must be up). bash/zsh get a short prompt
@@ -265,6 +273,10 @@ fn run() -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Commands::Doctor => doctor::run_doctor(),
+        Commands::Info { project } => {
+            let path = project_path(&project)?;
+            shell::run_project_info(&path)
+        }
         Commands::Bash { project } => {
             let path = project_path(&project)?;
             shell::enter_project_shell(&project, &path)

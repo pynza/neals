@@ -163,6 +163,7 @@ Reference `devenv.nix` layouts (not full apps): see [examples/](examples/).
 | `neals status` | Running projects, PIDs, services (real ports) |
 | `neals logs <name> [-f]` | Tail logs; `-f` follows all processes |
 | `neals bash <name>` | Shell in the project's netns (project must be up) |
+| `neals info <name>` | Run `devenv info` for the project |
 | `neals exec <name> -- …` | One-shot command in that netns + devenv |
 | `neals doctor` | Check tools, dirs, bind, daemon |
 | `neals completions <shell>` | Print completion snippet for shell rc |

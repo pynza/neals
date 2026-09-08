@@ -87,6 +87,18 @@ pub fn run_project_exec(project: &str, path: &Path, command: &[String]) -> Resul
     Ok(exit_code_from_status(status))
 }
 
+pub fn run_project_info(path: &Path) -> Result<ExitCode> {
+    let status = Command::new("devenv")
+        .arg("info")
+        .current_dir(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .context("failed to run `devenv info` (is devenv on PATH?)")?;
+    Ok(exit_code_from_status(status))
+}
+
 fn require_netns_pid(project: &str) -> Result<u32> {
     match with_daemon(Request::Status)? {
         Response::Status { projects } => {
