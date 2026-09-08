@@ -59,7 +59,7 @@ cat >"$PROJ/devenv.nix" <<'EOF'
 EOF
 
 echo "==> version"
-neals -V | grep -q '0.4.0'
+neals -V | grep -q '0.4.1'
 
 echo "==> register"
 ( cd "$PROJ" && neals register )
@@ -125,4 +125,4 @@ ps=d["Status"]["projects"]
 assert not any(p["name"]=="smoke" for p in ps), ps
 ' "$STATUS"
 
-echo "ok: up / nsenter(+exec) / down @ 0.4.0"
+echo "ok: up / nsenter(+exec) / down @ 0.4.1"
