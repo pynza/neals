@@ -159,7 +159,7 @@ Reference `devenv.nix` layouts (not full apps): see [examples/](examples/).
 | `neals prune` | Drop ghost entries (missing paths) |
 | `neals up <name> [-d]` | Start project; follow process logs unless `-d` |
 | `neals down <name>` | Stop project |
-| `neals refresh <name>` | Soft re-eval (`--update`, `--hard`); does not start |
+| `neals refresh <name>` | Soft re-eval (`--update`, `--hard`) |
 | `neals status` | Running projects, PIDs, services (real ports) |
 | `neals logs <name> [-f]` | Tail logs; `-f` follows all processes |
 | `neals bash <name>` | Shell in the project's netns (project must be up) |
@@ -179,7 +179,8 @@ While attached via `neals up` or `neals logs -f` (no PROCESS):
 | `Ctrl+B` | Enter project shell (`neals bash`) |
 | `Ctrl+C` or `Ctrl+X` | Stop the project; other follow tabs exit too |
 
-Process lines are prefixed like `be       | …` / `fe       | …` (devenv ≥ 2).
+Process lines are prefixed like `devenv | …` (bootstrap), then
+`be | …` / `fe | …` once per-process logs appear (devenv ≥ 2).
 
 ### Refresh
 

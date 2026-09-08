@@ -1,7 +1,6 @@
 use crate::daemon_client::with_daemon;
 use crate::logs::{
-    format_process_line, wait_for_devenv_runtime, wait_for_log_file, LogFollower, ProcessLogMux,
-    LOG_TAIL_LINES,
+    format_process_line, wait_for_log_file, LogFollower, ProcessLogMux, LOG_TAIL_LINES,
 };
 use crate::style;
 use anyhow::{bail, Context, Result};
@@ -14,6 +13,7 @@ use std::time::Duration;
 
 const TICK: Duration = Duration::from_millis(200);
 const DISCOVER_EVERY: u8 = 5; // ~1s at 200ms tick
+const DEVENV_STREAM: &str = "devenv";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveOutcome {
@@ -31,9 +31,13 @@ impl Drop for RawGuard {
     }
 }
 
-pub fn run_live_view(project: &str, from_start: bool) -> Result<LiveOutcome> {
+pub fn run_live_view(
+    project: &str,
+    from_start: bool,
+    merged_from: Option<u64>,
+) -> Result<LiveOutcome> {
     if !io::stdout().is_terminal() {
-        return follow_plain(project, from_start);
+        return follow_plain(project, from_start, merged_from);
     }
 
     let project_path = resolve_project_path(project)?;
@@ -41,7 +45,7 @@ pub fn run_live_view(project: &str, from_start: bool) -> Result<LiveOutcome> {
     enable_raw_mode().context("failed to enable raw mode")?;
     let _guard = RawGuard;
 
-    let outcome = follow_loop(project, &project_path, from_start)?;
+    let outcome = follow_loop(project, &project_path, from_start, merged_from)?;
     drop(_guard);
 
     match outcome {
@@ -63,9 +67,13 @@ pub fn run_live_view(project: &str, from_start: bool) -> Result<LiveOutcome> {
     Ok(outcome)
 }
 
-fn follow_plain(project: &str, from_start: bool) -> Result<LiveOutcome> {
+fn follow_plain(
+    project: &str,
+    from_start: bool,
+    merged_from: Option<u64>,
+) -> Result<LiveOutcome> {
     let project_path = resolve_project_path(project)?;
-    follow_loop(project, &project_path, from_start)
+    follow_loop(project, &project_path, from_start, merged_from)
 }
 
 fn resolve_project_path(project: &str) -> Result<std::path::PathBuf> {
@@ -85,42 +93,19 @@ fn project_is_running(project: &str) -> Option<bool> {
     }
 }
 
-fn follow_loop(project: &str, project_path: &Path, from_start: bool) -> Result<LiveOutcome> {
-    // Merged log appears first; devenv runtime / per-process logs may lag.
-    let _ = wait_for_log_file(project);
-    let mut mux = match wait_for_devenv_runtime(project_path) {
-        Ok(rt) => Some(ProcessLogMux::new(rt)),
-        Err(_) => None,
-    };
-
-    let mut merged: Option<LogFollower> = None;
-    let mut discover_ticks: u8 = 0;
+fn follow_loop(
+    project: &str,
+    project_path: &Path,
+    from_start: bool,
+    merged_from: Option<u64>,
+) -> Result<LiveOutcome> {
     let raw = io::stdout().is_terminal();
+    let mut mux: Option<ProcessLogMux> = None;
+    let mut discover_ticks: u8 = 0;
 
-    // Seed process followers, or fall back to the merged project log until they appear.
-    if let Some(mux) = mux.as_mut() {
-        let tail = if from_start {
-            None
-        } else {
-            Some(LOG_TAIL_LINES)
-        };
-        let initial = mux.refresh(tail)?;
-        for (name, line) in initial {
-            emit_line(raw, &format_process_line(&name, mux.width(), &line))?;
-        }
-    }
-    if mux.as_ref().map(|m| m.is_empty()).unwrap_or(true) {
-        let path = wait_for_log_file(project)?;
-        if from_start {
-            merged = Some(LogFollower::open_at_end(&path)?);
-        } else {
-            let (follower, lines) = LogFollower::open_with_tail(&path, LOG_TAIL_LINES)?;
-            for line in lines {
-                emit_line(raw, &line)?;
-            }
-            merged = Some(follower);
-        }
-    }
+    let path = wait_for_log_file(project)?;
+    let mut merged = Some(attach_devenv_merged(&path, from_start, merged_from, raw)?);
+    let mut devenv_width = DEVENV_STREAM.len();
 
     loop {
         if raw {
@@ -164,10 +149,10 @@ fn follow_loop(project: &str, project_path: &Path, from_start: bool) -> Result<L
             if let Some(mux) = mux.as_mut() {
                 let was_empty = mux.is_empty();
                 let initial = mux.refresh(None)?;
-                // Once per-process logs exist, drop the merged follower to avoid dupes.
                 if was_empty && !mux.is_empty() {
                     merged = None;
                 }
+                devenv_width = devenv_width.max(mux.width());
                 for (name, line) in initial {
                     emit_line(raw, &format_process_line(&name, mux.width(), &line))?;
                 }
@@ -175,17 +160,49 @@ fn follow_loop(project: &str, project_path: &Path, from_start: bool) -> Result<L
         }
 
         if let Some(mux) = mux.as_mut() {
-            let width = mux.width();
+            let width = mux.width().max(devenv_width);
             for (name, line) in mux.poll_lines()? {
                 emit_line(raw, &format_process_line(&name, width, &line))?;
             }
         }
         if let Some(follower) = merged.as_mut() {
+            let width = mux
+                .as_ref()
+                .map(|m| m.width().max(devenv_width))
+                .unwrap_or(devenv_width);
             for line in follower.poll_lines()? {
-                emit_line(raw, &line)?;
+                emit_line(raw, &format_process_line(DEVENV_STREAM, width, &line))?;
             }
         }
     }
+}
+
+fn attach_devenv_merged(
+    path: &Path,
+    from_start: bool,
+    merged_from: Option<u64>,
+    raw: bool,
+) -> Result<LogFollower> {
+    if let Some(offset) = merged_from {
+        let mut follower = LogFollower::open_from_offset(path, offset)?;
+        for line in follower.poll_lines()? {
+            emit_line(raw, &format_process_line(DEVENV_STREAM, DEVENV_STREAM.len(), &line))?;
+        }
+        return Ok(follower);
+    }
+
+    if from_start {
+        return LogFollower::open_at_end(path);
+    }
+
+    let (follower, lines) = LogFollower::open_with_tail(path, LOG_TAIL_LINES)?;
+    for line in lines {
+        emit_line(
+            raw,
+            &format_process_line(DEVENV_STREAM, DEVENV_STREAM.len(), &line),
+        )?;
+    }
+    Ok(follower)
 }
 
 fn emit_line(raw: bool, line: &str) -> Result<()> {

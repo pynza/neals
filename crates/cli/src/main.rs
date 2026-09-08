@@ -258,7 +258,7 @@ fn run() -> Result<ExitCode> {
                     logs::print_process_logs(&path, process, follow)?;
                 }
                 None if follow => {
-                    return after_live_view(&project, run_live_view(&project, false)?);
+                    return after_live_view(&project, run_live_view(&project, false, None)?);
                 }
                 None => logs::print_project_logs(&project, false)?,
             }
@@ -421,6 +421,7 @@ fn cmd_prune(yes: bool) -> Result<()> {
 }
 
 pub(crate) fn cmd_up(project: &str, detach: bool) -> Result<ExitCode> {
+    let merged_from = logs::project_log_len(project).unwrap_or(0);
     match with_daemon(Request::Up {
         project: project.to_string(),
     })? {
@@ -439,7 +440,7 @@ pub(crate) fn cmd_up(project: &str, detach: bool) -> Result<ExitCode> {
                 ));
                 return Ok(ExitCode::SUCCESS);
             }
-            after_live_view(project, run_live_view(project, true)?)
+            after_live_view(project, run_live_view(project, true, Some(merged_from))?)
         }
         Response::Error { message } => bail!("{message}"),
         other => bail!("unexpected response from nealsd: {other:?}"),

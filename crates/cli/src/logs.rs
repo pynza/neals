@@ -47,6 +47,11 @@ pub fn wait_for_log_file(project: &str) -> Result<PathBuf> {
     }
 }
 
+pub fn project_log_len(project: &str) -> Result<u64> {
+    let path = project_log_path(project)?;
+    Ok(std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0))
+}
+
 pub fn tail_lines(path: &Path, n: usize) -> Result<Vec<String>> {
     if n == 0 {
         return Ok(Vec::new());
@@ -124,6 +129,23 @@ impl LogFollower {
             .with_context(|| format!("failed to open {}", path.display()))?;
         let offset = file
             .seek(SeekFrom::End(0))
+            .with_context(|| format!("failed to seek {}", path.display()))?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            file,
+            offset,
+            pending: String::new(),
+        })
+    }
+
+    pub fn open_from_offset(path: &Path, offset: u64) -> Result<Self> {
+        let mut file = File::open(path)
+            .with_context(|| format!("failed to open {}", path.display()))?;
+        let len = file
+            .seek(SeekFrom::End(0))
+            .with_context(|| format!("failed to seek {}", path.display()))?;
+        let offset = offset.min(len);
+        file.seek(SeekFrom::Start(offset))
             .with_context(|| format!("failed to seek {}", path.display()))?;
         Ok(Self {
             path: path.to_path_buf(),
@@ -285,18 +307,6 @@ impl ProcessLogMux {
     }
 }
 
-pub fn wait_for_devenv_runtime(project_path: &Path) -> Result<PathBuf> {
-    let mut last_err = None;
-    for _ in 0..40 {
-        match neals_common::devenv::devenv_runtime(project_path) {
-            Ok(path) => return Ok(path),
-            Err(e) => last_err = Some(e),
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("devenv runtime unavailable")))
-}
-
 pub fn process_log_names(runtime: &Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(runtime.join("processes").join("logs"))
         .into_iter()
@@ -439,6 +449,19 @@ mod tests {
             got,
             vec!["line-49997", "line-49998", "line-49999"]
         );
+        let _ = fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn follower_open_from_offset_reads_new_only() {
+        let tmp = temp_path("from-off");
+        fs::write(&tmp, "old\n").unwrap();
+        let offset = fs::metadata(&tmp).unwrap().len();
+        let mut file = fs::OpenOptions::new().append(true).open(&tmp).unwrap();
+        writeln!(file, "new").unwrap();
+        drop(file);
+        let mut f = LogFollower::open_from_offset(&tmp, offset).unwrap();
+        assert_eq!(f.poll_lines().unwrap(), vec!["new"]);
         let _ = fs::remove_file(&tmp);
     }
 
