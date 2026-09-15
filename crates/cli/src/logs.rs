@@ -246,7 +246,7 @@ pub fn format_process_line(name: &str, width: usize, line: &str) -> String {
 
 pub struct ProcessLogMux {
     runtime: PathBuf,
-    known: HashSet<String>,
+    known: HashSet<(String, String)>,
     streams: Vec<(String, LogFollower)>,
     width: usize,
 }
@@ -265,20 +265,17 @@ impl ProcessLogMux {
         self.width
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.streams.is_empty()
-    }
-
     pub fn refresh(&mut self, tail: Option<usize>) -> Result<Vec<(String, String)>> {
         let mut initial = Vec::new();
         for name in process_log_names(&self.runtime) {
-            if !self.known.insert(name.clone()) {
-                continue;
-            }
             self.width = self.width.max(name.len());
             for stream in ["stdout", "stderr"] {
                 let path = process_log_file(&self.runtime, &name, stream);
                 if !path.is_file() {
+                    continue;
+                }
+                let key = (name.clone(), stream.to_string());
+                if !self.known.insert(key) {
                     continue;
                 }
                 if let Some(n) = tail {
@@ -313,7 +310,11 @@ pub fn process_log_names(runtime: &Path) -> Vec<String> {
         .flatten()
         .filter_map(|e| e.ok())
         .filter_map(|e| e.file_name().into_string().ok())
-        .filter_map(|f| f.strip_suffix(".stdout.log").map(str::to_string))
+        .filter_map(|f| {
+            f.strip_suffix(".stdout.log")
+                .or_else(|| f.strip_suffix(".stderr.log"))
+                .map(str::to_string)
+        })
         .collect();
     names.sort();
     names.dedup();
@@ -335,7 +336,12 @@ pub fn running_process_names(base: &Path) -> Vec<String> {
     names
 }
 
-pub fn print_process_logs(project_path: &Path, process: &str, follow: bool) -> Result<()> {
+pub fn print_process_logs(
+    project: &str,
+    project_path: &Path,
+    process: &str,
+    follow: bool,
+) -> Result<()> {
     let runtime = neals_common::devenv::devenv_runtime(project_path).with_context(|| {
         format!(
             "cannot locate the devenv runtime for {}",
@@ -344,18 +350,9 @@ pub fn print_process_logs(project_path: &Path, process: &str, follow: bool) -> R
     })?;
     let out = process_log_file(&runtime, process, "stdout");
     let err = process_log_file(&runtime, process, "stderr");
+
     if !out.is_file() && !err.is_file() {
-        let names = process_log_names(&runtime);
-        if names.is_empty() {
-            bail!(
-                "no per-process logs under {} (is the project up? devenv >= 2 required)",
-                runtime.join("processes").join("logs").display()
-            );
-        }
-        bail!(
-            "no logs for process `{process}`; running processes: {}",
-            names.join(", ")
-        );
+        wait_for_process_logs(project, process, &out, &err, &runtime, follow)?;
     }
 
     for path in [&out, &err] {
@@ -370,13 +367,13 @@ pub fn print_process_logs(project_path: &Path, process: &str, follow: bool) -> R
     if !follow {
         return Ok(());
     }
+
+    let mut attached: HashSet<PathBuf> = HashSet::new();
     let mut followers: Vec<LogFollower> = Vec::new();
-    for path in [&out, &err] {
-        if path.is_file() {
-            followers.push(LogFollower::open_at_end(path)?);
-        }
-    }
+    attach_new_process_streams(&out, &err, &mut attached, &mut followers)?;
+
     loop {
+        attach_new_process_streams(&out, &err, &mut attached, &mut followers)?;
         let mut printed = false;
         for follower in followers.iter_mut() {
             for line in follower.poll_lines()? {
@@ -389,6 +386,93 @@ pub fn print_process_logs(project_path: &Path, process: &str, follow: bool) -> R
         }
         thread::sleep(FOLLOW_POLL);
     }
+}
+
+fn wait_for_process_logs(
+    project: &str,
+    process: &str,
+    out: &Path,
+    err: &Path,
+    runtime: &Path,
+    follow: bool,
+) -> Result<()> {
+    let merged_path = project_log_path(project)?;
+    let mut merged = if merged_path.is_file() {
+        Some(LogFollower::open_at_end(&merged_path)?)
+    } else {
+        None
+    };
+
+    crate::style::eprint_dim(&format!(
+        "waiting for `{process}` process logs under {} — showing devenv bootstrap until then",
+        runtime.join("processes").join("logs").display()
+    ));
+
+    let mut ticks = 0usize;
+    loop {
+        if out.is_file() || err.is_file() {
+            crate::style::eprint_dim(&format!("`{process}` process logs ready"));
+            return Ok(());
+        }
+
+        let names = process_log_names(runtime);
+        if !names.is_empty() && !names.iter().any(|n| n == process) {
+            bail!(
+                "no logs for process `{process}`; running processes: {}",
+                names.join(", ")
+            );
+        }
+
+        if let Some(follower) = merged.as_mut() {
+            let mut printed = false;
+            for line in follower.poll_lines()? {
+                println!("{}", format_process_line("devenv", "devenv".len(), &line));
+                printed = true;
+            }
+            if printed {
+                io::stdout().flush().ok();
+            }
+        } else if merged_path.is_file() {
+            merged = Some(LogFollower::open_at_end(&merged_path)?);
+        }
+
+        if !follow {
+            ticks += 1;
+            if ticks >= 150 {
+                // ~30s at 200ms
+                break;
+            }
+        }
+        thread::sleep(FOLLOW_POLL);
+    }
+
+    let names = process_log_names(runtime);
+    if names.is_empty() {
+        bail!(
+            "no per-process logs under {} yet (is the project up / still bootstrapping? \
+             try `neals logs {project} -f` or check {})",
+            runtime.join("processes").join("logs").display(),
+            merged_path.display()
+        );
+    }
+    bail!(
+        "no logs for process `{process}`; running processes: {}",
+        names.join(", ")
+    )
+}
+
+fn attach_new_process_streams(
+    out: &Path,
+    err: &Path,
+    attached: &mut HashSet<PathBuf>,
+    followers: &mut Vec<LogFollower>,
+) -> Result<()> {
+    for path in [out, err] {
+        if path.is_file() && attached.insert(path.to_path_buf()) {
+            followers.push(LogFollower::open_at_end(path)?);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -491,6 +575,16 @@ mod tests {
     }
 
     #[test]
+    fn process_log_names_includes_stderr_only() {
+        let runtime = temp_path("proc-stderr-only");
+        let dir = runtime.join("processes").join("logs");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("be.stderr.log"), "boom\n").unwrap();
+        assert_eq!(process_log_names(&runtime), vec!["be"]);
+        let _ = fs::remove_dir_all(&runtime);
+    }
+
+    #[test]
     fn process_log_names_missing_dir_is_empty() {
         let runtime = temp_path("proc-missing");
         assert!(process_log_names(&runtime).is_empty());
@@ -565,6 +659,20 @@ mod tests {
         fs::write(dir.join("backend.stdout.log"), "").unwrap();
         assert!(mux.refresh(None).unwrap().is_empty());
         assert_eq!(mux.width(), "backend".len());
+
+        fs::write(dir.join("a.stderr.log"), "").unwrap();
+        assert!(mux.refresh(None).unwrap().is_empty());
+        let mut err = fs::OpenOptions::new()
+            .append(true)
+            .open(dir.join("a.stderr.log"))
+            .unwrap();
+        writeln!(err, "err-line").unwrap();
+        drop(err);
+        assert_eq!(
+            mux.poll_lines().unwrap(),
+            vec![("a".into(), "err-line".into())]
+        );
+
         let _ = fs::remove_dir_all(&runtime);
     }
 }

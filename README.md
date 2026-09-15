@@ -180,8 +180,10 @@ While attached via `neals up` or `neals logs -f` (no PROCESS):
 | `Ctrl+B` | Enter project shell (`neals bash`) |
 | `Ctrl+C` or `Ctrl+X` | Stop the project; other follow tabs exit too |
 
-Process lines are prefixed like `devenv | …` (bootstrap), then
-`be | …` / `fe | …` once per-process logs appear (devenv ≥ 2).
+Process lines are prefixed like `devenv | …` (bootstrap / nix build) and
+keep flowing after processes start; `be | …` / `fe | …` appear alongside once
+per-process logs exist (devenv ≥ 2). `neals logs <name> <process> -f` waits
+for those files and shows the merged bootstrap stream until they appear.
 
 ### Refresh
 

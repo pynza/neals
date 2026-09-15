@@ -132,9 +132,10 @@ confirmation (use -y/--yes to skip). Does not remove source, devenv.lock,\n\
     #[command(long_about = "\
 Prints the last 100 log lines of the project (merged devenv output). With an
 optional PROCESS name, prints that process's own stdout/stderr instead
-(devenv >= 2; the project must be up). With -f/--follow and no PROCESS, follows
-all process logs with name prefixes (same as `neals up`); with a
-PROCESS, follows its stdout/stderr in the terminal.")]
+(devenv >= 2; the project must be up). While those files are not ready yet
+(bootstrap / nix build), -f tails the merged log until they appear.
+With -f/--follow and no PROCESS, follows merged + all process logs
+(same as `neals up`).")]
     Logs {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
@@ -263,7 +264,7 @@ fn run() -> Result<ExitCode> {
             match process.as_deref() {
                 Some(process) => {
                     let path = project_path(&project)?;
-                    logs::print_process_logs(&path, process, follow)?;
+                    logs::print_process_logs(&project, &path, process, follow)?;
                 }
                 None if follow => {
                     return after_live_view(&project, run_live_view(&project, false, None)?);

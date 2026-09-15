@@ -7,6 +7,7 @@ use anyhow::{bail, Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use neals_common::{Registry, Request, Response};
+use std::collections::{HashSet, VecDeque};
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 use std::time::Duration;
@@ -14,6 +15,7 @@ use std::time::Duration;
 const TICK: Duration = Duration::from_millis(200);
 const DISCOVER_EVERY: u8 = 5; // ~1s at 200ms tick
 const DEVENV_STREAM: &str = "devenv";
+const CROSS_DEDUP_CAP: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveOutcome {
@@ -102,6 +104,7 @@ fn follow_loop(
     let raw = io::stdout().is_terminal();
     let mut mux: Option<ProcessLogMux> = None;
     let mut discover_ticks: u8 = 0;
+    let mut dedup = CrossDeduper::new(CROSS_DEDUP_CAP);
 
     let path = wait_for_log_file(project)?;
     let mut merged = Some(attach_devenv_merged(&path, from_start, merged_from, raw)?);
@@ -147,14 +150,12 @@ fn follow_loop(
                 }
             }
             if let Some(mux) = mux.as_mut() {
-                let was_empty = mux.is_empty();
                 let initial = mux.refresh(None)?;
-                if was_empty && !mux.is_empty() {
-                    merged = None;
-                }
                 devenv_width = devenv_width.max(mux.width());
                 for (name, line) in initial {
-                    emit_line(raw, &format_process_line(&name, mux.width(), &line))?;
+                    if dedup.take_process(&line) {
+                        emit_line(raw, &format_process_line(&name, mux.width(), &line))?;
+                    }
                 }
             }
         }
@@ -162,7 +163,9 @@ fn follow_loop(
         if let Some(mux) = mux.as_mut() {
             let width = mux.width().max(devenv_width);
             for (name, line) in mux.poll_lines()? {
-                emit_line(raw, &format_process_line(&name, width, &line))?;
+                if dedup.take_process(&line) {
+                    emit_line(raw, &format_process_line(&name, width, &line))?;
+                }
             }
         }
         if let Some(follower) = merged.as_mut() {
@@ -171,9 +174,79 @@ fn follow_loop(
                 .map(|m| m.width().max(devenv_width))
                 .unwrap_or(devenv_width);
             for line in follower.poll_lines()? {
-                emit_line(raw, &format_process_line(DEVENV_STREAM, width, &line))?;
+                if dedup.take_merged(&line) {
+                    emit_line(raw, &format_process_line(DEVENV_STREAM, width, &line))?;
+                }
             }
         }
+    }
+}
+
+struct CrossDeduper {
+    from_process: RecentLines,
+    from_merged: RecentLines,
+}
+
+impl CrossDeduper {
+    fn new(cap: usize) -> Self {
+        Self {
+            from_process: RecentLines::new(cap),
+            from_merged: RecentLines::new(cap),
+        }
+    }
+
+    fn take_process(&mut self, line: &str) -> bool {
+        if self.from_merged.remove(line) {
+            return false;
+        }
+        self.from_process.insert(line);
+        true
+    }
+
+    fn take_merged(&mut self, line: &str) -> bool {
+        if self.from_process.remove(line) {
+            return false;
+        }
+        self.from_merged.insert(line);
+        true
+    }
+}
+
+struct RecentLines {
+    order: VecDeque<String>,
+    set: HashSet<String>,
+    cap: usize,
+}
+
+impl RecentLines {
+    fn new(cap: usize) -> Self {
+        Self {
+            order: VecDeque::new(),
+            set: HashSet::new(),
+            cap,
+        }
+    }
+
+    fn insert(&mut self, line: &str) {
+        if !self.set.insert(line.to_string()) {
+            return;
+        }
+        self.order.push_back(line.to_string());
+        while self.order.len() > self.cap {
+            if let Some(old) = self.order.pop_front() {
+                self.set.remove(&old);
+            }
+        }
+    }
+
+    fn remove(&mut self, line: &str) -> bool {
+        if !self.set.remove(line) {
+            return false;
+        }
+        if let Some(pos) = self.order.iter().position(|s| s == line) {
+            self.order.remove(pos);
+        }
+        true
     }
 }
 
@@ -214,4 +287,30 @@ fn emit_line(raw: bool, line: &str) -> Result<()> {
     }
     out.flush().ok();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cross_dedup_suppresses_echo_either_order() {
+        let mut d = CrossDeduper::new(8);
+        assert!(d.take_process("hello"));
+        assert!(!d.take_merged("hello"));
+
+        let mut d = CrossDeduper::new(8);
+        assert!(d.take_merged("hello"));
+        assert!(!d.take_process("hello"));
+    }
+
+    #[test]
+    fn cross_dedup_keeps_unique_lines_and_legit_repeats() {
+        let mut d = CrossDeduper::new(8);
+        assert!(d.take_merged("nix build"));
+        assert!(d.take_process("app ready"));
+        assert!(!d.take_merged("app ready"));
+        assert!(d.take_process("app ready"));
+        assert!(d.take_merged("supervisor only"));
+    }
 }

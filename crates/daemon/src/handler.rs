@@ -303,7 +303,7 @@ fn last_log_lines(path: &Path, n: usize) -> String {
 }
 
 fn up_command() -> (String, Vec<String>) {
-    match std::env::var("NEALS_UP_CMD") {
+    let (program, args) = match std::env::var("NEALS_UP_CMD") {
         Ok(raw) if !raw.trim().is_empty() => {
             let mut parts = raw.split_whitespace().map(str::to_string);
             let program = parts.next().unwrap_or_else(|| "devenv".into());
@@ -313,5 +313,18 @@ fn up_command() -> (String, Vec<String>) {
             "devenv".into(),
             vec!["up".into(), "--mode".into(), "all".into()],
         ),
+    };
+    if stdbuf_on_path() {
+        let mut wrapped = vec!["-oL".into(), "-eL".into(), program];
+        wrapped.extend(args);
+        ("stdbuf".into(), wrapped)
+    } else {
+        (program, args)
     }
+}
+
+fn stdbuf_on_path() -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| dir.join("stdbuf").is_file())
+    })
 }
