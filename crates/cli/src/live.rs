@@ -69,11 +69,7 @@ pub fn run_live_view(
     Ok(outcome)
 }
 
-fn follow_plain(
-    project: &str,
-    from_start: bool,
-    merged_from: Option<u64>,
-) -> Result<LiveOutcome> {
+fn follow_plain(project: &str, from_start: bool, merged_from: Option<u64>) -> Result<LiveOutcome> {
     let project_path = resolve_project_path(project)?;
     follow_loop(project, &project_path, from_start, merged_from)
 }
@@ -88,9 +84,7 @@ fn resolve_project_path(project: &str) -> Result<std::path::PathBuf> {
 
 fn project_is_running(project: &str) -> Option<bool> {
     match with_daemon(Request::Status) {
-        Ok(Response::Status { projects }) => {
-            Some(projects.iter().any(|p| p.name == project))
-        }
+        Ok(Response::Status { projects }) => Some(projects.iter().any(|p| p.name == project)),
         _ => None,
     }
 }
@@ -259,7 +253,10 @@ fn attach_devenv_merged(
     if let Some(offset) = merged_from {
         let mut follower = LogFollower::open_from_offset(path, offset)?;
         for line in follower.poll_lines()? {
-            emit_line(raw, &format_process_line(DEVENV_STREAM, DEVENV_STREAM.len(), &line))?;
+            emit_line(
+                raw,
+                &format_process_line(DEVENV_STREAM, DEVENV_STREAM.len(), &line),
+            )?;
         }
         return Ok(follower);
     }

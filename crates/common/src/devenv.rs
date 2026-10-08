@@ -30,7 +30,9 @@ pub enum ServiceKind {
         preferred_port: Option<u16>,
         proxy: bool,
     },
-    Unix { socket_file: String },
+    Unix {
+        socket_file: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,10 +163,7 @@ pub fn parse_neals_services(src: &str) -> Result<Vec<ServiceDecl>> {
         services.push(draft.into_decl(service)?);
     }
 
-    let mut seen: HashMap<String, ()> = services
-        .iter()
-        .map(|s| (s.service.clone(), ()))
-        .collect();
+    let mut seen: HashMap<String, ()> = services.iter().map(|s| (s.service.clone(), ())).collect();
 
     for (path, value) in &bindings {
         if path.len() != 2 || path[0] != "route" {
@@ -292,6 +291,113 @@ pub fn read_neals_routes(project_dir: &Path) -> Result<Vec<RouteDecl>> {
         .collect())
 }
 
+pub fn has_neals_config(src: &str) -> bool {
+    let Some(expr) = Root::parse(src).tree().expr() else {
+        return false;
+    };
+    let Some(set) = top_level_attrset(&expr) else {
+        return false;
+    };
+    set.attrpath_values().any(|apv| {
+        apv.attrpath()
+            .and_then(|p| attr_path_idents(&p))
+            .is_some_and(|path| path.first().map(String::as_str) == Some("neals"))
+    })
+}
+
+pub fn inject_neals_stanza(src: &str, name: &str) -> Result<String> {
+    if !is_valid_project_name(name) {
+        bail!("`{name}` is not a valid neals.name");
+    }
+    if has_neals_config(src) {
+        return Ok(src.to_string());
+    }
+
+    let root = Root::parse(src);
+    let expr = root.tree().expr().context("devenv.nix is empty or not Nix")?;
+    let set = top_level_attrset(&expr).context(
+        "devenv.nix has no top-level attrset to attach `neals` to \
+         (expected `{ … }` or `{ pkgs, … }: { … }`)",
+    )?;
+    let after_l_curly = set
+        .l_curly_token()
+        .map(|t| usize::from(t.text_range().end()))
+        .context("devenv.nix attrset is missing `{`")?;
+
+    let neals = format!("  neals = {{\n    name = \"{name}\";\n    services = {{ }};\n  }};\n");
+    let need_option = !src.contains("options.neals");
+
+    match find_imports_list(src, &set)? {
+        None => {
+            let head = if need_option {
+                format!("\n{}\n{neals}", neals_imports_block())
+            } else {
+                format!("\n\n{neals}")
+            };
+            Ok(insert_str(src, after_l_curly, &head))
+        }
+        Some((list, end)) => {
+            let mut out = src.to_string();
+            out.insert_str(end, &format!("\n\n{neals}"));
+            if need_option {
+                let after_l_brack = list
+                    .l_brack_token()
+                    .map(|t| usize::from(t.text_range().end()))
+                    .context("devenv.nix `imports` list is missing `[`")?;
+                out.insert_str(after_l_brack, &format!("\n{NEALS_OPTION}"));
+            }
+            Ok(out)
+        }
+    }
+}
+
+const NEALS_OPTION: &str = "\
+    ({ lib, ... }: {
+      options.neals = lib.mkOption {
+        type = lib.types.attrs;
+        default = { };
+      };
+    })
+";
+
+fn neals_imports_block() -> String {
+    format!("  imports = [\n{NEALS_OPTION}  ];\n")
+}
+
+fn find_imports_list(src: &str, set: &ast::AttrSet) -> Result<Option<(ast::List, usize)>> {
+    for apv in set.attrpath_values() {
+        let Some(path) = apv.attrpath().and_then(|p| attr_path_idents(&p)) else {
+            continue;
+        };
+        if path != ["imports"] {
+            continue;
+        }
+        let Some(Expr::List(list)) = apv.value() else {
+            bail!(
+                "devenv.nix already has `imports` that is not a list; \
+                 add `options.neals` by hand, then re-run `neals init`"
+            );
+        };
+        let after_brack = list
+            .r_brack_token()
+            .map(|t| usize::from(t.text_range().end()))
+            .context("devenv.nix `imports` list is missing `]`")?;
+        let semi = src[after_brack..]
+            .find(';')
+            .context("devenv.nix `imports` list is missing `;`")?;
+        return Ok(Some((list, after_brack + semi + 1)));
+    }
+    Ok(None)
+}
+
+fn insert_str(src: &str, at: usize, text: &str) -> String {
+    let mut out = String::with_capacity(src.len() + text.len());
+    out.push_str(&src[..at]);
+    out.push_str(text);
+    out.push_str(&src[at..]);
+    out
+}
+
 pub fn devenv_runtime(project_dir: &Path) -> Result<PathBuf> {
     let output = Command::new("devenv")
         .args(["eval", "devenv.runtime"])
@@ -299,11 +405,7 @@ pub fn devenv_runtime(project_dir: &Path) -> Result<PathBuf> {
         .stdin(Stdio::null())
         .output()
         .context("failed to run `devenv` (is devenv on PATH?)")?;
-    parse_devenv_runtime(
-        output.status.success(),
-        &output.stdout,
-        &output.stderr,
-    )
+    parse_devenv_runtime(output.status.success(), &output.stdout, &output.stderr)
 }
 
 fn parse_devenv_runtime(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<PathBuf> {
@@ -321,8 +423,8 @@ fn parse_devenv_runtime(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<P
     }
     let text = String::from_utf8_lossy(stdout);
     let text = text.trim();
-    let value: serde_json::Value =
-        serde_json::from_str(text).with_context(|| format!("unexpected `devenv eval` output: {text}"))?;
+    let value: serde_json::Value = serde_json::from_str(text)
+        .with_context(|| format!("unexpected `devenv eval` output: {text}"))?;
     let raw = value
         .get("devenv.runtime")
         .and_then(|v| v.as_str())
@@ -369,12 +471,10 @@ impl ServiceDraft {
                     kind: ServiceKind::Unix { socket_file },
                 })
             }
-            (Some(_), Some(_)) => bail!(
-                "neals.services.{service} cannot set both port and socket"
-            ),
-            (None, None) => bail!(
-                "neals.services.{service} needs port = <n> or socket = \"file.sock\""
-            ),
+            (Some(_), Some(_)) => bail!("neals.services.{service} cannot set both port and socket"),
+            (None, None) => {
+                bail!("neals.services.{service} needs port = <n> or socket = \"file.sock\"")
+            }
         }
     }
 }
@@ -842,12 +942,39 @@ mod tests {
 
     #[test]
     fn parse_runtime_failure_includes_stderr() {
-        let err = parse_devenv_runtime(false, b"", b"boom\n").unwrap_err().to_string();
+        let err = parse_devenv_runtime(false, b"", b"boom\n")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("boom"), "{err}");
     }
 
     #[test]
     fn parse_runtime_rejects_garbage() {
         assert!(parse_devenv_runtime(true, b"not json", b"").is_err());
+    }
+
+    #[test]
+    fn inject_neals_stanza_shapes() {
+        assert!(has_neals_config(r#"{ neals = { }; }"#));
+        assert!(!has_neals_config(r#"{ packages = []; }"#));
+        assert!(inject_neals_stanza("{ }", "Nope").is_err());
+
+        let bare = "{ pkgs, ... }: {\n  packages = [];\n}\n";
+        let a = inject_neals_stanza(bare, "demo").unwrap();
+        assert_eq!(parse_neals_name(&a).as_deref(), Some("demo"));
+        assert!(a.contains("];\n\n  neals ="), "{a}");
+        assert!(a.find("imports =").unwrap() < a.find("neals =").unwrap());
+        assert_eq!(inject_neals_stanza(&a, "other").unwrap(), a);
+
+        let with = "{ pkgs, ... }: {\n  imports = [ ./hw.nix ];\n  packages = [];\n}\n";
+        let b = inject_neals_stanza(with, "my-app").unwrap();
+        assert!(b.contains("./hw.nix"));
+        assert_eq!(b.matches("imports =").count(), 1);
+        assert!(b.contains("];\n\n  neals ="), "{b}");
+        assert!(b.find("imports =").unwrap() < b.find("neals =").unwrap());
+
+        let stubbed = "{\n  imports = [\n    ({ lib, ... }: {\n      options.neals = lib.mkOption {\n        type = lib.types.attrs;\n        default = { };\n      };\n    })\n  ];\n}\n";
+        let c = inject_neals_stanza(stubbed, "demo").unwrap();
+        assert_eq!(c.matches("options.neals").count(), 1);
     }
 }

@@ -196,9 +196,7 @@ fn run_watched_shell(
                 if !project_session_alive(project, netns_pid) {
                     let _ = child.kill();
                     let _ = child.wait();
-                    style::eprint_dim(&format!(
-                        "`{project}` stopped — left the project shell"
-                    ));
+                    style::eprint_dim(&format!("`{project}` stopped — left the project shell"));
                     return Ok(ExitCode::SUCCESS);
                 }
                 thread::sleep(WATCH_TICK);

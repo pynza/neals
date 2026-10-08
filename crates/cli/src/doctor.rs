@@ -191,7 +191,9 @@ fn caddy_on(host: &str, port: u16) -> Option<bool> {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(300)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(300)));
     stream
-        .write_all(format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes())
+        .write_all(
+            format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes(),
+        )
         .ok()?;
     let mut buf = [0u8; 1024];
     let n = stream.read(&mut buf).unwrap_or(0);

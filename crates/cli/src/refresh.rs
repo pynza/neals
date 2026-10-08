@@ -92,10 +92,7 @@ fn print_hard_warning(name: &str, project_path: &Path) {
 }
 
 fn managed_wipe_targets(name: &str, project_path: &Path) -> Vec<PathBuf> {
-    let mut paths = vec![
-        project_path.join(".devenv"),
-        project_path.join(".neals"),
-    ];
+    let mut paths = vec![project_path.join(".devenv"), project_path.join(".neals")];
     for root in managed_runtime_roots() {
         paths.push(root.join(name));
     }
@@ -135,12 +132,10 @@ fn remove_managed_path(path: &Path, project: &str, project_root: &Path) -> Resul
         );
     }
     if path.is_dir() {
-        fs::remove_dir_all(path)
-            .with_context(|| format!("failed to remove {}", path.display()))?;
+        fs::remove_dir_all(path).with_context(|| format!("failed to remove {}", path.display()))?;
         style::print_dim(&format!("removed {}", path.display()));
     } else if path.is_file() || path.symlink_metadata().is_ok() {
-        fs::remove_file(path)
-            .with_context(|| format!("failed to remove {}", path.display()))?;
+        fs::remove_file(path).with_context(|| format!("failed to remove {}", path.display()))?;
         style::print_dim(&format!("removed {}", path.display()));
     }
     Ok(())
@@ -155,7 +150,8 @@ fn is_allowed_wipe_path(path: &Path, project: &str, project_root: &Path) -> Resu
         if paths_equal_loose(path, &expected) {
             if let Some(parent) = path.parent() {
                 if parent.exists() {
-                    let parent_canon = fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+                    let parent_canon =
+                        fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
                     if parent_canon != canon_root {
                         return Ok(false);
                     }

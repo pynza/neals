@@ -45,6 +45,18 @@ Print help.
 Print version.
 .SH COMMANDS
 .TP
+.B init
+If
+.I devenv.nix
+is missing, run
+.BR "devenv init" .
+Then add the
+.B neals
+option stub and
+.B neals = { name; services; }
+block (name = folder). No-op if the block is already present.
+Does not register the project.
+.TP
 .B register
 Register the current directory (reads
 .B neals.name
@@ -191,6 +203,7 @@ still works (ephemeral port + proxy) but is deprecated.
 See the project README.
 .SH EXAMPLES
 .nf
+neals init
 neals register
 neals up demo
 neals status

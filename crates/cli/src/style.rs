@@ -7,10 +7,7 @@ pub fn use_color() -> bool {
     if std::env::var_os("NO_COLOR").is_some() {
         return false;
     }
-    if matches!(
-        std::env::var("CLICOLOR").as_deref(),
-        Ok("0")
-    ) {
+    if matches!(std::env::var("CLICOLOR").as_deref(), Ok("0")) {
         return false;
     }
     std::io::stdout().is_terminal() || std::io::stderr().is_terminal()
@@ -26,8 +23,7 @@ pub fn new_table() -> Table {
 pub fn header_cell(text: &str) -> Cell {
     let cell = Cell::new(text);
     if use_color() {
-        cell.add_attribute(Attribute::Bold)
-            .fg(TableColor::Cyan)
+        cell.add_attribute(Attribute::Bold).fg(TableColor::Cyan)
     } else {
         cell
     }

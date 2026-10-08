@@ -95,8 +95,7 @@ impl Registry {
 
     pub fn take_ghosts(&mut self) -> Vec<Project> {
         let projects = std::mem::take(&mut self.projects);
-        let (ghosts, keep): (Vec<_>, Vec<_>) =
-            projects.into_iter().partition(Project::is_ghost);
+        let (ghosts, keep): (Vec<_>, Vec<_>) = projects.into_iter().partition(Project::is_ghost);
         self.projects = keep;
         ghosts
     }
@@ -108,10 +107,8 @@ mod tests {
 
     #[test]
     fn load_missing_file_returns_empty() {
-        let tmp = std::env::temp_dir().join(format!(
-            "neals-registry-missing-{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("neals-registry-missing-{}", std::process::id()));
         let path = tmp.join("projects.json");
         let registry = Registry::load_from(&path).unwrap();
         assert!(registry.projects.is_empty());

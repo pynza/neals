@@ -39,9 +39,7 @@ pub fn ensure_daemon() -> Result<()> {
             return Ok(());
         }
     }
-    bail!(
-        "failed to start nealsd (check ~/.local/state/neals/nealsd.log and caddy.log)"
-    );
+    bail!("failed to start nealsd (check ~/.local/state/neals/nealsd.log and caddy.log)");
 }
 
 fn ping_ok() -> bool {

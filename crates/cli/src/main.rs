@@ -1,5 +1,6 @@
 mod daemon_client;
 mod doctor;
+mod init;
 mod live;
 mod logs;
 mod refresh;
@@ -15,9 +16,7 @@ use clap_complete::{
 use comfy_table::Cell;
 use daemon_client::with_daemon;
 use live::{run_live_view, LiveOutcome};
-use neals_common::{
-    resolve_project_name, Project, ProjectName, Registry, Request, Response,
-};
+use neals_common::{resolve_project_name, Project, ProjectName, Registry, Request, Response};
 use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
@@ -27,6 +26,7 @@ Neals orchestrates local devenv projects: registry, lifecycle (up/down),
 per-project network namespaces, HTTP routes via Caddy, and branded shells.
 
 Typical flow:
+  neals init               # devenv.nix + neals block (no register)
   neals register
   neals up my-app          # follow process logs
   # browser → http://api.my-app.localhost/  (system daemon)
@@ -79,6 +79,12 @@ fn clap_styles() -> styling::Styles {
 
 #[derive(Subcommand)]
 enum Commands {
+    #[command(long_about = "\
+If the current directory has no devenv.nix, runs `devenv init`. Then adds the
+`neals` option stub and `neals = { name; services; }` block (name = folder).
+Does nothing if that block is already present. Does not register the project.")]
+    Init,
+
     #[command(long_about = "\
 Reads `neals.name` from devenv.nix (folder name as fallback) and adds the
 project to ~/.config/neals/projects.json.")]
@@ -158,10 +164,13 @@ be up). Useful when debugging environment / nix evaluation.")]
         project: String,
     },
 
-    #[command(name = "bash", long_about = "\
+    #[command(
+        name = "bash",
+        long_about = "\
 Enters a quiet `devenv shell` using $SHELL inside the project's network
 namespace (project must be up). bash/zsh get a short prompt
-`neals:<project>`; use `neals status` for host/guest ports.")]
+`neals:<project>`; use `neals status` for host/guest ports."
+    )]
     Bash {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,
@@ -226,6 +235,10 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
     match cli.command {
+        Commands::Init => {
+            init::run()?;
+            Ok(ExitCode::SUCCESS)
+        }
         Commands::Register => {
             cmd_register(cli.yes)?;
             Ok(ExitCode::SUCCESS)

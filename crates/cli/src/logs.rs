@@ -57,8 +57,8 @@ pub fn tail_lines(path: &Path, n: usize) -> Result<Vec<String>> {
         return Ok(Vec::new());
     }
 
-    let mut file = File::open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
+    let mut file =
+        File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let mut pos = file
         .seek(SeekFrom::End(0))
         .with_context(|| format!("failed to seek {}", path.display()))?;
@@ -125,8 +125,8 @@ pub struct LogFollower {
 
 impl LogFollower {
     pub fn open_at_end(path: &Path) -> Result<Self> {
-        let mut file = File::open(path)
-            .with_context(|| format!("failed to open {}", path.display()))?;
+        let mut file =
+            File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
         let offset = file
             .seek(SeekFrom::End(0))
             .with_context(|| format!("failed to seek {}", path.display()))?;
@@ -139,8 +139,8 @@ impl LogFollower {
     }
 
     pub fn open_from_offset(path: &Path, offset: u64) -> Result<Self> {
-        let mut file = File::open(path)
-            .with_context(|| format!("failed to open {}", path.display()))?;
+        let mut file =
+            File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
         let len = file
             .seek(SeekFrom::End(0))
             .with_context(|| format!("failed to seek {}", path.display()))?;
@@ -529,10 +529,7 @@ mod tests {
         }
         drop(file);
         let got = tail_lines(&tmp, 3).unwrap();
-        assert_eq!(
-            got,
-            vec!["line-49997", "line-49998", "line-49999"]
-        );
+        assert_eq!(got, vec!["line-49997", "line-49998", "line-49999"]);
         let _ = fs::remove_file(&tmp);
     }
 
@@ -567,7 +564,12 @@ mod tests {
         let runtime = temp_path("proc-logs");
         let dir = runtime.join("processes").join("logs");
         fs::create_dir_all(&dir).unwrap();
-        for name in ["b.stdout.log", "a.stdout.log", "a.stderr.log", "ignored.txt"] {
+        for name in [
+            "b.stdout.log",
+            "a.stdout.log",
+            "a.stderr.log",
+            "ignored.txt",
+        ] {
             fs::write(dir.join(name), "").unwrap();
         }
         assert_eq!(process_log_names(&runtime), vec!["a", "b"]);
@@ -604,18 +606,12 @@ mod tests {
             ("other-dir", "ghost.stdout.log"),
         ] {
             fs::write(
-                base.join(runtime)
-                    .join("processes")
-                    .join("logs")
-                    .join(name),
+                base.join(runtime).join("processes").join("logs").join(name),
                 "",
             )
             .unwrap();
         }
-        assert_eq!(
-            running_process_names(&base),
-            vec!["admin", "be", "redis"]
-        );
+        assert_eq!(running_process_names(&base), vec!["admin", "be", "redis"]);
     }
 
     #[test]

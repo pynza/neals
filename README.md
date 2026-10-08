@@ -136,6 +136,7 @@ preferred port stays fixed, while `nealsd` leases distinct **host** ports
 and bridges them into the guest.
 
 ```bash
+neals init             # skip if the neals block is already there
 neals register
 neals doctor
 neals up demo          # prints routes, then follows process logs
@@ -153,6 +154,7 @@ Reference `devenv.nix` layouts (not full apps): see [examples/](examples/).
 
 | Command | What it does |
 |---------|----------------|
+| `neals init` | `devenv init` if needed, then add the `neals` block (no register) |
 | `neals register` | Add current directory to the registry |
 | `neals list` | Show registered projects |
 | `neals unregister <name>` | Remove from registry |

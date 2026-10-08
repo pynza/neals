@@ -12,7 +12,9 @@ pub fn call_daemon(request: &Request) -> Result<Response> {
     stream
         .write_all(encoded.as_bytes())
         .context("failed to write request to nealsd")?;
-    stream.flush().context("failed to flush request to nealsd")?;
+    stream
+        .flush()
+        .context("failed to flush request to nealsd")?;
 
     let mut reader = BufReader::new(stream);
     let mut line = String::new();

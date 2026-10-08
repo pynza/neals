@@ -30,11 +30,17 @@ fn runtime_dir_with(xdg_runtime_dir: Option<OsString>) -> PathBuf {
 }
 
 pub fn config_dir() -> Result<PathBuf> {
-    Ok(config_dir_with(std::env::var_os("XDG_CONFIG_HOME"), home_dir()?))
+    Ok(config_dir_with(
+        std::env::var_os("XDG_CONFIG_HOME"),
+        home_dir()?,
+    ))
 }
 
 pub fn state_dir() -> Result<PathBuf> {
-    Ok(state_dir_with(std::env::var_os("XDG_STATE_HOME"), home_dir()?))
+    Ok(state_dir_with(
+        std::env::var_os("XDG_STATE_HOME"),
+        home_dir()?,
+    ))
 }
 
 pub fn runtime_dir() -> Result<PathBuf> {
