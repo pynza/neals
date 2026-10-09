@@ -22,22 +22,15 @@ use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 
 const LONG_ABOUT: &str = "\
-Neals orchestrates local devenv projects: registry, lifecycle (up/down),
-per-project network namespaces, HTTP routes via Caddy, and branded shells.
+Register devenv projects, run them under nealsd in per-project network
+namespaces, reverse-proxy HTTP services via Caddy, and attach to logs or a
+project shell.
 
-Typical flow:
-  neals init               # devenv.nix + neals block (no register)
-  neals register
-  neals up my-app          # follow process logs
-  # browser → http://api.my-app.localhost/  (system daemon)
-  #        or http://api.my-app.localhost:2015/  (ad-hoc)
-  neals bash my-app        # same netns as the running project
-
-Requires bubblewrap + slirp4netns. System daemon for portless :80 URLs:
-  see contrib/systemd/README.md
+Requires bubblewrap and slirp4netns. See neals(1) and
+contrib/systemd/README.md for system (portless :80) install.
 ";
 
-const AFTER_HELP: &str = "\
+const AFTER_LONG_HELP: &str = "\
 Directories:
   ~/.config/neals/projects.json     project registry
   ~/.local/state/neals/             logs, caddy.json, shell rc snippets
@@ -55,14 +48,14 @@ Keys while following logs (neals up / logs -f):
 #[command(
     name = "neals",
     version,
-    about = "Local platform orchestrator for devenv projects",
+    about = "Manage devenv projects in isolated network namespaces",
     long_about = LONG_ABOUT,
-    after_help = AFTER_HELP,
+    after_long_help = AFTER_LONG_HELP,
     color = ColorChoice::Auto,
     styles = clap_styles()
 )]
 struct Cli {
-    #[arg(short = 'y', long = "yes", global = true)]
+    #[arg(short = 'y', long = "yes", global = true, help = "Assume yes for confirmations")]
     yes: bool,
 
     #[command(subcommand)]
@@ -79,125 +72,156 @@ fn clap_styles() -> styling::Styles {
 
 #[derive(Subcommand)]
 enum Commands {
-    #[command(long_about = "\
+    #[command(
+        about = "Initialize devenv.nix with a neals block",
+        long_about = "\
 If the current directory has no devenv.nix, runs `devenv init`. Then adds the
 `neals` option stub and `neals = { name; services; }` block (name = folder).
-Does nothing if that block is already present. Does not register the project.")]
+Does nothing if that block is already present. Does not register the project."
+    )]
     Init,
 
-    #[command(long_about = "\
+    #[command(
+        about = "Register the current directory",
+        long_about = "\
 Reads `neals.name` from devenv.nix (folder name as fallback) and adds the
-project to ~/.config/neals/projects.json.")]
+project to ~/.config/neals/projects.json."
+    )]
     Register,
 
+    #[command(about = "List registered projects")]
     List,
 
+    #[command(about = "Unregister a project")]
     Unregister {
-        #[arg(add = ArgValueCompleter::new(complete_projects))]
+        #[arg(help = "Project name", add = ArgValueCompleter::new(complete_projects))]
         project: String,
     },
 
+    #[command(about = "Remove ghost registry entries")]
     Prune,
 
-    #[command(long_about = "\
-Starts the project under nealsd, prints HTTP routes, then follows process logs
-in the terminal.\n\n\
+    #[command(
+        about = "Start a project and follow logs",
+        long_about = "\
+Start the project under nealsd, print HTTP routes, then follow process logs.\n\n\
 Ctrl+Q detach (keeps running). Ctrl+B enter the project shell.\n\
 Ctrl+C / Ctrl+X stop the project (other follow tabs exit too).\n\
-Use -d/--detach to skip following logs.")]
+Use -d/--detach to skip following logs."
+    )]
     Up {
-        #[arg(add = ArgValueCompleter::new(complete_projects))]
+        #[arg(help = "Project name", add = ArgValueCompleter::new(complete_projects))]
         project: String,
-        #[arg(short = 'd', long = "detach")]
+        #[arg(short = 'd', long = "detach", help = "Do not follow logs after start")]
         detach: bool,
     },
 
+    #[command(about = "Stop a running project")]
     Down {
-        #[arg(add = ArgValueCompleter::new(complete_projects))]
+        #[arg(help = "Project name", add = ArgValueCompleter::new(complete_projects))]
         project: String,
     },
 
-    #[command(long_about = "\
-Soft-refresh a project: stop if running, re-evaluate the devenv environment.\n\
+    #[command(
+        about = "Re-evaluate a project's devenv environment",
+        long_about = "\
+Stop the project if running and re-evaluate the devenv environment.\n\
 Does not start the project — run `neals up` afterwards.\n\n\
 --update runs `devenv update` (modifies devenv.lock) before evaluation.\n\
 --hard also deletes managed state (.devenv, .neals, project runtime) after\n\
 confirmation (use -y/--yes to skip). Does not remove source, devenv.lock,\n\
-.env, or external volumes.")]
+.env, or external volumes."
+    )]
     Refresh {
-        #[arg(add = ArgValueCompleter::new(complete_projects))]
+        #[arg(help = "Project name", add = ArgValueCompleter::new(complete_projects))]
         project: String,
-        #[arg(long = "update")]
+        #[arg(long = "update", help = "Run devenv update before evaluation")]
         update: bool,
-        #[arg(long = "hard")]
+        #[arg(
+            long = "hard",
+            help = "Wipe managed state (.devenv, .neals, runtime)"
+        )]
         hard: bool,
     },
 
+    #[command(about = "Show running projects and service ports")]
     Status,
 
-    #[command(long_about = "\
-Prints the last 100 log lines of the project (merged devenv output). With an
-optional PROCESS name, prints that process's own stdout/stderr instead
-(devenv >= 2; the project must be up). While those files are not ready yet
-(bootstrap / nix build), -f tails the merged log until they appear.
-With -f/--follow and no PROCESS, follows merged + all process logs
-(same as `neals up`).")]
+    #[command(
+        about = "Show or follow project logs",
+        long_about = "\
+Print the last 100 lines of the merged project log. With PROCESS, print that
+process's stdout/stderr instead (devenv >= 2; project must be up). While
+per-process files are not ready, -f tails the merged log until they appear.
+With -f and no PROCESS, follow merged + all process logs (same as `neals up`)."
+    )]
     Logs {
-        #[arg(add = ArgValueCompleter::new(complete_projects))]
+        #[arg(help = "Project name", add = ArgValueCompleter::new(complete_projects))]
         project: String,
         #[arg(
             value_name = "PROCESS",
+            help = "Process name (per-process logs; devenv >= 2)",
             add = ArgValueCompleter::new(complete_processes)
         )]
         process: Option<String>,
-        #[arg(short = 'f', long = "follow")]
+        #[arg(short = 'f', long = "follow", help = "Follow log output")]
         follow: bool,
     },
 
+    #[command(about = "Check host tools, paths, and daemon")]
     Doctor,
 
-    #[command(long_about = "\
-Prints `devenv info` for the registered project (host path; project need not\n\
-be up). Useful when debugging environment / nix evaluation.")]
+    #[command(
+        about = "Show devenv info for a project",
+        long_about = "\
+Run `devenv info` in the registered project directory (host path; project
+need not be up)."
+    )]
     Info {
-        #[arg(add = ArgValueCompleter::new(complete_projects))]
+        #[arg(help = "Project name", add = ArgValueCompleter::new(complete_projects))]
         project: String,
     },
 
     #[command(
         name = "bash",
+        about = "Open a shell in the project network namespace",
         long_about = "\
-Enters a quiet `devenv shell` using $SHELL inside the project's network
+Enter a quiet `devenv shell` using $SHELL inside the project's network
 namespace (project must be up). bash/zsh get a short prompt
 `neals:<project>`; use `neals status` for host/guest ports."
     )]
     Bash {
-        #[arg(add = ArgValueCompleter::new(complete_projects))]
+        #[arg(help = "Project name", add = ArgValueCompleter::new(complete_projects))]
         project: String,
     },
 
-    #[command(long_about = "\
-Runs one command inside the project netns and devenv (project must be up).
-Working directory is the project root. Stdio is inherited (pipes work).
-Exit code is the command's exit code.\n\
+    #[command(
+        about = "Run a command in the project network namespace",
+        long_about = "\
+Run one command inside the project netns and devenv (project must be up).
+Working directory is the project root; stdio is inherited; exit status is
+the command's. Arguments are passed literally (no shell).\n\
 \n\
-Arguments are passed literally — there is no shell in between:\n\
   neals exec demo -- redis-cli ping\n\
-  neals exec demo -- ls -la be\n\
-\n\
-For shell features (&&, |, redirects, globs, cd), wrap with bash -lc:\n\
   neals exec demo -- bash -lc 'cd be && make migrate'\n\
-  neals exec demo -- bash -lc 'make install && make test'\n\
 \n\
-Use `neals bash <name>` for an interactive session.")]
+Use `neals bash` for an interactive session."
+    )]
     Exec {
-        #[arg(add = ArgValueCompleter::new(complete_projects))]
+        #[arg(help = "Project name", add = ArgValueCompleter::new(complete_projects))]
         project: String,
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            required = true,
+            help = "Command and arguments"
+        )]
         command: Vec<String>,
     },
 
+    #[command(about = "Print shell completion code")]
     Completions {
+        #[arg(help = "Target shell")]
         shell: CompletionShell,
     },
 }
