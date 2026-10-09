@@ -139,7 +139,18 @@ Run
 in the registered project directory (host; project need not be up).
 .TP
 .BI exec " name \-\- command\&..."
-Run a command inside the project netns and devenv.
+Run
+.I command
+inside the project netns and devenv (project must be up).
+Working directory is the project root; stdio is inherited; exit status is
+the command's. Arguments are passed literally (no shell).
+For
+.BR && ", pipes, redirects, or " cd ,
+wrap with a shell:
+.BR "neals exec demo \-\- bash \-lc 'cd be && make migrate'" .
+Prefer
+.B neals bash
+for interactive work.
 .TP
 .B doctor
 Check tools, directories, HTTP bind, and daemon.
@@ -208,7 +219,7 @@ neals register
 neals up demo
 neals status
 neals bash demo
-neals exec demo -- php artisan migrate
+neals exec demo -- redis-cli ping
 source <(COMPLETE=bash neals)
 .fi
 .SH SEE ALSO

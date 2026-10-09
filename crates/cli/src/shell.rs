@@ -72,18 +72,16 @@ pub fn run_project_exec(project: &str, path: &Path, command: &[String]) -> Resul
         bail!("no command provided");
     }
     let netns_pid = require_netns_pid(project)?;
-    let script = command
-        .iter()
-        .map(|arg| neals_common::shell_quote(arg))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let status = nsenter_devenv_stdin(
-        path,
-        project,
-        netns_pid,
-        &["--quiet", "shell", "bash"],
-        &format!("{script}\n"),
-    )?;
+    let mut args = vec![
+        "--quiet".to_string(),
+        "shell".to_string(),
+        "--".to_string(),
+    ];
+    args.extend(command.iter().cloned());
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let status = spawn_nsenter_devenv(path, project, netns_pid, &refs, &[])?
+        .wait()
+        .context("waiting for exec command")?;
     Ok(exit_code_from_status(status))
 }
 
@@ -250,30 +248,6 @@ fn nsenter_command(dir: &Path, project: &str, netns_pid: u32) -> Command {
     .current_dir(dir)
     .env("NEALS_PROJECT", project);
     cmd
-}
-
-fn nsenter_devenv_stdin(
-    dir: &Path,
-    project: &str,
-    netns_pid: u32,
-    devenv_args: &[&str],
-    script: &str,
-) -> Result<ExitStatus> {
-    use std::io::Write;
-    let mut child = nsenter_command(dir, project, netns_pid)
-        .args(devenv_args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("failed to run `nsenter`/`devenv` (is util-linux + devenv on PATH?)")?;
-    child
-        .stdin
-        .take()
-        .context("devenv shell has no stdin")?
-        .write_all(script.as_bytes())
-        .context("failed to write the command into devenv shell stdin")?;
-    child.wait().context("waiting for devenv shell")
 }
 
 fn exit_code_from_status(status: ExitStatus) -> ExitCode {

@@ -176,6 +176,20 @@ namespace (project must be up). bash/zsh get a short prompt
         project: String,
     },
 
+    #[command(long_about = "\
+Runs one command inside the project netns and devenv (project must be up).
+Working directory is the project root. Stdio is inherited (pipes work).
+Exit code is the command's exit code.\n\
+\n\
+Arguments are passed literally — there is no shell in between:\n\
+  neals exec demo -- redis-cli ping\n\
+  neals exec demo -- ls -la be\n\
+\n\
+For shell features (&&, |, redirects, globs, cd), wrap with bash -lc:\n\
+  neals exec demo -- bash -lc 'cd be && make migrate'\n\
+  neals exec demo -- bash -lc 'make install && make test'\n\
+\n\
+Use `neals bash <name>` for an interactive session.")]
     Exec {
         #[arg(add = ArgValueCompleter::new(complete_projects))]
         project: String,

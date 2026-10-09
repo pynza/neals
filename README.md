@@ -166,7 +166,7 @@ Reference `devenv.nix` layouts (not full apps): see [examples/](examples/).
 | `neals logs <name> [-f]` | Tail logs; `-f` follows all processes |
 | `neals bash <name>` | Shell in the project's netns (project must be up) |
 | `neals info <name>` | Run `devenv info` for the project |
-| `neals exec <name> -- …` | One-shot command in that netns + devenv |
+| `neals exec <name> -- …` | One-shot command in that netns + devenv (literal argv) |
 | `neals doctor` | Check tools, dirs, bind, daemon |
 | `neals completions <shell>` | Print completion snippet for shell rc |
 
@@ -206,6 +206,30 @@ environment.
 short prompt `neals:<project> …`, clears the screen on entry, and leaves the
 shell if the project is stopped (e.g. `neals down` from another tab). Use
 `neals status` (or the routes printed by `neals up`) for services.
+
+### `exec` vs `bash`
+
+`neals exec <name> -- CMD …` is the **non-interactive** door: cwd is the
+project root, argv is passed literally (no shell in between), stdio is
+inherited (pipes and TTY apps work), and the command's exit code becomes
+`neals`' exit code. Use it from scripts, Makefiles, CI:
+
+```bash
+neals exec demo -- redis-cli ping
+neals exec demo -- sh -c 'test -f be/package.json && echo ok'
+cat dump.sql | neals exec demo -- psql db
+```
+
+Your own shell still parses the line, so `&&`, `|` and `>` need the usual
+quoting and a shell inside the netns:
+
+```bash
+neals exec demo -- bash -lc 'cd be && make migrate'
+```
+
+`neals bash <name>` is the **interactive** door (session, prompt, exit when the
+project stops) and wins for anything you type by hand: reaching a subdirectory
+is `cd be`, not a flag.
 
 ## Directories & data
 
