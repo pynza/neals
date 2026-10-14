@@ -2,7 +2,7 @@
 
 Local platform orchestrator for [devenv](https://devenv.sh) projects.
 
-![Neals demo](docs/demo.mp4)
+https://github.com/user-attachments/assets/6bed70a0-1ba7-4c77-afd1-c9acb5ebc896
 
 Neals runs each project in its own network namespace, leases host loopback
 ports without collisions, reverse-proxies into guest `127.0.0.1` binds, and
