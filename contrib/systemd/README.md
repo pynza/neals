@@ -6,7 +6,7 @@ Each project runs in a bubblewrap network namespace; `nealsd` needs `bwrap` and 
 
 ## Packaged install
 
-Prefer `.deb` / `.rpm` from [GitHub Releases](https://github.com/pynza/neals/releases) — use `apt install ./…deb` / `dnf install ./…rpm` so Depends resolve. Post-install enables the unit. See the main [README Install](../../README.md#install) section.
+Prefer `.deb` / `.rpm` from [GitHub Releases](https://github.com/pynza/neals/releases) — use `apt install ./…deb` / `dnf install ./…rpm` so Depends resolve. Post-install enables the unit. See [docs/install.md](../../docs/install.md).
 
 ## Manual install
 
@@ -34,4 +34,4 @@ Environment=PATH=%h/.nix-profile/bin:/usr/local/bin:/usr/bin:/bin
 
 Logs: `journalctl -u "nealsd@$USER" -f`
 
-Full steps (binaries, completions, uninstall): [README → Manual install](../../README.md#manual-install).
+Full steps (binaries, completions, uninstall): [docs/install.md → Manual install](../../docs/install.md#manual-install-arch--tarball--from-source).

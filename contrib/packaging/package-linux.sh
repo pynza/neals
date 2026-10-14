@@ -140,7 +140,7 @@ Neals v${VERSION} (${TARGET})
 Binaries: ./neals ./nealsd
 
 This archive is for manual install (e.g. Arch). Prefer .deb / .rpm from
-GitHub Releases when available — see README.md → Install / Manual install.
+GitHub Releases when available — see docs/install.md.
 
 Quick:
   install -m755 neals nealsd ~/.local/bin/
