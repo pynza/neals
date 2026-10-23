@@ -27,7 +27,8 @@ sudo dnf install ./neals-*-1.x86_64.rpm       # or *.aarch64.rpm
 `sudo apt-get install -f` (or install `bubblewrap` + `slirp4netns` by hand).
 
 Post-install asks `[Y/n]` to enable `nealsd@$SUDO_USER` (Caddy on `:80`,
-portless `http://{service}.{project}.localhost/`) and shell completion.
+portless `http://{service}.{project}.localhost/`), `neals-hosts-sync.path`
+(auto `/etc/hosts` aliases), and shell completion.
 Overrides: `NEALS_DEB_SETUP=0` skip, `NEALS_DEB_SETUP=y` auto-yes
 (also `NEALS_PKG_SETUP`).
 
@@ -55,9 +56,11 @@ install -m755 neals nealsd ~/.local/bin/
 # or: sudo install -m755 neals nealsd /usr/local/bin/   # or /usr/bin/
 
 sudo install -m644 contrib/systemd/nealsd@.service /etc/systemd/system/
-# set ExecStart= to your nealsd path if not /usr/local/bin/nealsd
+sudo install -m644 contrib/systemd/neals-hosts-sync.{path,service} /etc/systemd/system/
+# set ExecStart= to your binary paths if not /usr/local/bin/…
 sudo systemctl daemon-reload
 sudo systemctl enable --now "nealsd@$USER"
+sudo systemctl enable --now neals-hosts-sync.path
 ```
 
 If `caddy` is only under nix, add a PATH drop-in (`systemctl edit nealsd@$USER`):
@@ -70,7 +73,8 @@ Environment=PATH=%h/.nix-profile/bin:/usr/local/bin:/usr/bin:/bin
 Autocomplete: bash via `/usr/share/bash-completion/completions/neals` if you
 install that file, or add `neals completions bash|zsh|fish` to your shell rc.
 
-Disable later: `sudo systemctl disable --now "nealsd@$USER"`.
+Disable later:
+`sudo systemctl disable --now "nealsd@$USER" neals-hosts-sync.path`.
 
 ## Development (ad-hoc)
 

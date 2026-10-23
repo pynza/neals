@@ -19,7 +19,7 @@ Global: `-y` / `--yes` skips confirmations. `neals --help` for full text.
 | `neals bash <name>` | Shell in the project's netns (project must be up) |
 | `neals info <name>` | Run `devenv info` for the project |
 | `neals exec <name> -- …` | One-shot command in that netns + devenv (literal argv) |
-| `neals hosts [show\|apply]` | Host DNS fragment (`sudo neals hosts apply`) |
+| `neals hosts [show\|apply]` | Host DNS fragment (auto via `neals-hosts-sync.path`) |
 | `neals doctor` | Check tools, dirs, hosts sync, daemon |
 | `neals completions <shell>` | Print completion snippet for shell rc |
 

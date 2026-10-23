@@ -4,6 +4,7 @@ use anyhow::Result;
 use neals_common::{
     call_daemon, config_dir, ensure_dir, runtime_dir, state_dir, state_hosts_path,
     system_hosts_path, BEGIN_MARKER, Request, Response, SYSTEM_DAEMON_SOCKET,
+    SYSTEM_HOSTS_MIRROR,
 };
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -71,6 +72,7 @@ pub fn run_doctor() -> Result<ExitCode> {
         check_dir_writable("config", config_dir()?),
         check_dir_writable("state", state_dir()?),
         check_dir_writable("runtime", runtime_dir()?),
+        check_hosts_path_unit(),
         check_hosts_sync(),
         check_daemon_ping(),
     ];
@@ -174,6 +176,31 @@ fn check_system_daemon() -> Check {
     }
 }
 
+fn check_hosts_path_unit() -> Check {
+    if !Command::new("systemctl")
+        .args(["is-enabled", "--quiet", "neals-hosts-sync.path"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+    {
+        return Check::warn(
+            "hosts-sync",
+            "neals-hosts-sync.path not enabled (packaged install enables it)",
+        );
+    }
+    if Path::new(SYSTEM_HOSTS_MIRROR).is_file() {
+        Check::ok(
+            "hosts-sync",
+            format!("path unit enabled; mirror {SYSTEM_HOSTS_MIRROR}"),
+        )
+    } else {
+        Check::info(
+            "hosts-sync",
+            "path unit enabled; mirror appears after `neals up`",
+        )
+    }
+}
+
 fn check_hosts_sync() -> Check {
     let Ok(fragment_path) = state_hosts_path() else {
         return Check::warn("hosts", "cannot resolve state dir");
@@ -187,7 +214,7 @@ fn check_hosts_sync() -> Check {
         return Check::warn(
             "hosts",
             format!(
-                "cannot read {}; run `sudo neals hosts apply`",
+                "cannot read {}; enable neals-hosts-sync.path or `sudo neals hosts apply`",
                 system.display()
             ),
         );
@@ -199,7 +226,7 @@ fn check_hosts_sync() -> Check {
         Check::warn(
             "hosts",
             format!(
-                "fragment not in {}; run `sudo neals hosts apply`",
+                "fragment not in {} yet (path unit applies on change; or `sudo neals hosts apply`)",
                 system.display()
             ),
         )

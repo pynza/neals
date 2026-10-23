@@ -26,14 +26,16 @@ Wire apps with the short name in-guest (`DB_HOST=db`, `MAIL_HOST=mailpit`) and
 the long name from host tools (`mysql -h laravel-nuxt_db`). Use the preferred
 service port in both places.
 
-`nealsd` writes `~/.local/state/neals/hosts` and merges it into `/etc/hosts`
-when writable. If not (typical for a user unit), run once:
+`nealsd` writes `~/.local/state/neals/hosts` and mirrors `/run/neals/hosts`.
+With the packaged install, `neals-hosts-sync.path` watches that mirror and
+merges `/etc/hosts` as root (no manual sudo after setup). Fallback:
 
 ```bash
 sudo neals hosts apply
+# or: sudo neals hosts apply --from /run/neals/hosts
 ```
 
-`neals hosts` shows the fragment; `neals doctor` warns when it is out of sync.
+`neals hosts` shows the fragment; `neals doctor` checks the path unit and sync.
 Override the system file path with `NEALS_HOSTS_FILE` (tests / custom setups).
 
 ## What Neals injects

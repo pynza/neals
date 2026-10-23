@@ -98,6 +98,13 @@ EOF
   fi
 
   systemctl enable --now "nealsd@${user}.service"
+  # Host DNS: path unit watches /run/neals/hosts (written by nealsd) and merges /etc/hosts.
+  if [[ -f /usr/lib/systemd/system/neals-hosts-sync.path ]]; then
+    systemctl enable --now neals-hosts-sync.path 2>/dev/null || true
+    # Pick up a fragment that already exists (reinstall / upgrade).
+    systemctl start neals-hosts-sync.service 2>/dev/null || true
+    echo "neals: enabled neals-hosts-sync.path (auto /etc/hosts aliases)"
+  fi
   mkdir -p "$STATE_DIR"
   echo "$user" >"$STATE_USER"
   echo "neals: enabled nealsd@${user} (prefers :80, falls back if busy)"
@@ -123,13 +130,14 @@ configure|1|2)
   fi
 
   echo "neals: configuring for user ${USER_NAME}"
-  if ask_yes_no "Enable nealsd@${USER_NAME} (*.localhost; prefers :80) and shell completion? [Y/n] "; then
+  if ask_yes_no "Enable nealsd@${USER_NAME} (*.localhost; prefers :80), host DNS sync, and shell completion? [Y/n] "; then
     enable_daemon "$USER_NAME"
     setup_user_completion "$USER_NAME"
     echo "neals: try: neals doctor"
   else
     echo "neals: skipped. Later:"
     echo "  sudo systemctl enable --now \"nealsd@${USER_NAME}\""
+    echo "  sudo systemctl enable --now neals-hosts-sync.path"
     echo "  neals completions zsh   # if needed"
   fi
   ;;

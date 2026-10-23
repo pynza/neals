@@ -1,0 +1,17 @@
+[Unit]
+Description=Watch Neals host DNS fragment under /run/neals
+Documentation=file:///usr/local/share/doc/neals/systemd.md
+# Starts with nealsd@ (RuntimeDirectory=neals). Safe if the file appears later.
+After=local-fs.target
+
+[Path]
+# Absolute path — no per-user HOME / XDG — works on any distro layout.
+PathExists=/run/neals/hosts
+PathChanged=/run/neals/hosts
+Unit=neals-hosts-sync.service
+# Coalesce bursts (daemon restart / multi-service bind).
+TriggerLimitIntervalSec=2s
+TriggerLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

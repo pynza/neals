@@ -25,7 +25,8 @@ Upstream docs (Neals repository): `README.md`, `docs/`, `docs/examples/`.
   on `127.0.0.1`. Host proxies listen on a unique `127.53.x.y` at the same
   preferred port. `neals status` shows host endpoints.
 - **DNS**: in-guest short name (`db`) + `{project}_{service}`; on the host
-  only the long name (needs `/etc/hosts` sync — `sudo neals hosts apply`).
+  only the long name (`neals-hosts-sync.path` merges `/etc/hosts`, or
+  `sudo neals hosts apply`).
 - **Proxy**: only services with `proxy = true` (or UNIX socket) get a Caddy
   hostname. Plain `port` services are private (host DNS / `neals bash`).
 - **Binds**: apps must listen on `127.0.0.1` at the guest port (not `0.0.0.0`).

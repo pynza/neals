@@ -224,8 +224,8 @@ Use `neals bash` for an interactive session."
         long_about = "\
 Neals maps `{project}_{service}` on the host to a dedicated 127.53.x.y address
 (preferred port). Inside the project netns, the short service name also works.\n\n\
-`nealsd` writes ~/.local/state/neals/hosts and tries to merge it into /etc/hosts.
-If that fails (no root), run `sudo neals hosts apply`."
+With the packaged daemon, `neals-hosts-sync.path` applies /run/neals/hosts into
+/etc/hosts automatically. Manual: `sudo neals hosts apply`."
     )]
     Hosts {
         #[command(subcommand)]
@@ -243,8 +243,20 @@ If that fails (no root), run `sudo neals hosts apply`."
 enum HostsCmd {
     #[command(about = "Show the current hosts fragment (default)")]
     Show,
-    #[command(about = "Merge the fragment into /etc/hosts (needs write access)")]
-    Apply,
+    #[command(
+        about = "Merge a hosts fragment into /etc/hosts (needs write access)",
+        long_about = "\
+Reads the XDG state fragment by default, or `--from FILE` (used by
+neals-hosts-sync.service with /run/neals/hosts)."
+    )]
+    Apply {
+        #[arg(
+            long = "from",
+            value_name = "FILE",
+            help = "Fragment path (default: ~/.local/state/neals/hosts)"
+        )]
+        from: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -385,14 +397,18 @@ fn cmd_hosts(action: HostsCmd) -> Result<()> {
                 print!("{text}");
             }
             style::eprint_dim(&format!(
-                "fragment {}; system {}",
+                "fragment {}; mirror {}; system {}",
                 path.display(),
+                neals_common::SYSTEM_HOSTS_MIRROR,
                 neals_common::system_hosts_path().display()
             ));
             Ok(())
         }
-        HostsCmd::Apply => {
-            neals_common::apply_from_state()?;
+        HostsCmd::Apply { from } => {
+            match from {
+                Some(path) => neals_common::apply_hosts_fragment_file(&path)?,
+                None => neals_common::apply_from_state()?,
+            }
             style::print_ok(&format!(
                 "applied hosts fragment to {}",
                 neals_common::system_hosts_path().display()

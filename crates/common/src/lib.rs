@@ -13,8 +13,9 @@ pub use devenv::{
     ServiceKind,
 };
 pub use hosts::{
-    apply_from_state, apply_hosts_file, merge_hosts_file, render_host_block, state_hosts_path,
-    system_hosts_path, BEGIN_MARKER, END_MARKER,
+    apply_from_state, apply_hosts_file, apply_hosts_fragment_file, merge_hosts_file,
+    mirror_system_hosts_fragment, read_hosts_fragment, render_host_block, state_hosts_path,
+    system_hosts_path, BEGIN_MARKER, END_MARKER, SYSTEM_HOSTS_MIRROR,
 };
 pub use ipc::{
     decode_request, decode_response, encode_request, encode_response, ProjectRuntime, Request,

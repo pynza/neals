@@ -131,6 +131,8 @@ strip "$STAGE/neals" "$STAGE/nealsd" || true
 cp contrib/man/neals.1 "$STAGE/man/"
 cp contrib/man/nealsd.8 "$STAGE/man/"
 cp contrib/systemd/nealsd@.service "$STAGE/systemd/"
+cp contrib/systemd/neals-hosts-sync.path "$STAGE/systemd/"
+cp contrib/systemd/neals-hosts-sync.service "$STAGE/systemd/"
 cp contrib/systemd/README.md "$STAGE/doc/systemd.md"
 cp README.md "$STAGE/README.md"
 
@@ -148,9 +150,12 @@ Quick:
 
 System daemon (portless *.localhost on :80):
   sudo install -m644 systemd/nealsd@.service /etc/systemd/system/
+  sudo install -m644 systemd/neals-hosts-sync.path systemd/neals-hosts-sync.service \\
+    /etc/systemd/system/
   # edit ExecStart if binaries are not under /usr/local/bin
   sudo systemctl daemon-reload
   sudo systemctl enable --now "nealsd@\$USER"
+  sudo systemctl enable --now neals-hosts-sync.path
 
 Requires at runtime: Linux + systemd, nix, devenv, caddy on PATH
 EOF
@@ -180,9 +185,14 @@ cp "$STAGE/man/neals.1" "$USR/share/man/man1/"
 cp "$STAGE/man/nealsd.8" "$USR/share/man/man8/"
 gzip -9n "$USR/share/man/man1/neals.1" "$USR/share/man/man8/nealsd.8"
 
-sed 's|/usr/local/bin/nealsd|/usr/bin/nealsd|;s|file:///usr/local/share/doc/neals/systemd.md|file:///usr/share/doc/neals/systemd.md|' \
-  "$STAGE/systemd/nealsd@.service" \
-  >"$USR/lib/systemd/system/nealsd@.service"
+rewrite_unit() {
+  local src="$1" dst="$2"
+  sed 's|/usr/local/bin/nealsd|/usr/bin/nealsd|;s|/usr/local/bin/neals|/usr/bin/neals|;s|file:///usr/local/share/doc/neals/systemd.md|file:///usr/share/doc/neals/systemd.md|' \
+    "$src" >"$dst"
+}
+rewrite_unit "$STAGE/systemd/nealsd@.service" "$USR/lib/systemd/system/nealsd@.service"
+rewrite_unit "$STAGE/systemd/neals-hosts-sync.service" "$USR/lib/systemd/system/neals-hosts-sync.service"
+rewrite_unit "$STAGE/systemd/neals-hosts-sync.path" "$USR/lib/systemd/system/neals-hosts-sync.path"
 
 install -m644 contrib/packaging/deb/bash-completion \
   "$USR/share/bash-completion/completions/neals"

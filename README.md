@@ -65,8 +65,8 @@ REDIS_HOST=redis
 REDIS_PORT=${NEALS_REDIS_PORT}
 ```
 
-From the host: `redis-cli -h demo_redis` (after `sudo neals hosts apply` if
-`/etc/hosts` is not writable by `nealsd`).
+From the host: `redis-cli -h demo_redis` (packaged install auto-updates
+`/etc/hosts` via `neals-hosts-sync.path`).
 
 ```bash
 neals init             # skip if the neals block is already there

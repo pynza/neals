@@ -1,7 +1,8 @@
 use crate::state::{BoundRoute, BoundTarget};
 use anyhow::{Context, Result};
 use neals_common::{
-    apply_hosts_file, render_host_block, service_host_name, state_hosts_path, system_hosts_path,
+    apply_hosts_file, mirror_system_hosts_fragment, render_host_block, service_host_name,
+    state_hosts_path, system_hosts_path,
 };
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
@@ -39,7 +40,7 @@ pub fn host_entries(projects: &[(String, Vec<BoundRoute>)]) -> Vec<(Ipv4Addr, St
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostsSync {
     Applied,
-    StateOnly,
+    Deferred,
 }
 
 pub fn sync_host_aliases(projects: &[(String, Vec<BoundRoute>)]) -> Result<HostsSync> {
@@ -54,18 +55,22 @@ pub fn sync_host_aliases(projects: &[(String, Vec<BoundRoute>)]) -> Result<Hosts
     std::fs::write(&state_path, &block)
         .with_context(|| format!("failed to write {}", state_path.display()))?;
 
+    let mirrored = mirror_system_hosts_fragment(&block);
+
     let system = system_hosts_path();
     match apply_hosts_file(&system, &block) {
         Ok(()) => Ok(HostsSync::Applied),
         Err(err) => {
-            eprintln!(
-                "nealsd: host DNS not applied to {} ({err:#}); \
-                 long names work after `sudo neals hosts apply` \
-                 (fragment: {})",
-                system.display(),
-                state_path.display()
-            );
-            Ok(HostsSync::StateOnly)
+            if !mirrored {
+                eprintln!(
+                    "nealsd: host DNS not applied to {} ({err:#}); \
+                     enable neals-hosts-sync.path or run `sudo neals hosts apply` \
+                     (fragment: {})",
+                    system.display(),
+                    state_path.display()
+                );
+            }
+            Ok(HostsSync::Deferred)
         }
     }
 }

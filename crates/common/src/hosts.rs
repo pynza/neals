@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 pub const BEGIN_MARKER: &str = "# BEGIN neals";
 pub const END_MARKER: &str = "# END neals";
+pub const SYSTEM_HOSTS_MIRROR: &str = "/run/neals/hosts";
 
 pub fn render_host_block(entries: &[(Ipv4Addr, String)]) -> String {
     let mut lines = vec![BEGIN_MARKER.to_string()];
@@ -78,15 +79,35 @@ pub fn apply_hosts_file(path: &Path, block: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn apply_from_state() -> Result<()> {
-    let state_path = state_hosts_path()?;
-    let block = if state_path.exists() {
-        std::fs::read_to_string(&state_path)
-            .with_context(|| format!("failed to read {}", state_path.display()))?
+pub fn read_hosts_fragment(path: &Path) -> Result<String> {
+    if path.exists() {
+        std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))
     } else {
-        String::new()
-    };
+        Ok(String::new())
+    }
+}
+
+pub fn apply_from_state() -> Result<()> {
+    apply_hosts_fragment_file(&state_hosts_path()?)
+}
+
+pub fn apply_hosts_fragment_file(fragment: &Path) -> Result<()> {
+    let block = read_hosts_fragment(fragment)?;
     apply_hosts_file(&system_hosts_path(), &block)
+}
+
+/// Best-effort copy for the system path unit (`neals-hosts-sync.path`).
+/// Returns whether the mirror was written.
+pub fn mirror_system_hosts_fragment(block: &str) -> bool {
+    let path = Path::new(SYSTEM_HOSTS_MIRROR);
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    if !parent.is_dir() {
+        return false;
+    }
+    std::fs::write(path, block).is_ok()
 }
 
 #[cfg(test)]
