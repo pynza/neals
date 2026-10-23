@@ -188,6 +188,17 @@ fn check_hosts_path_unit() -> Check {
             "neals-hosts-sync.path not enabled (packaged install enables it)",
         );
     }
+    let failed = Command::new("systemctl")
+        .args(["is-failed", "--quiet", "neals-hosts-sync.path"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if failed {
+        return Check::warn(
+            "hosts-sync",
+            "neals-hosts-sync.path is failed — run: sudo systemctl reset-failed neals-hosts-sync.path && sudo systemctl restart neals-hosts-sync.path",
+        );
+    }
     if Path::new(SYSTEM_HOSTS_MIRROR).is_file() {
         Check::ok(
             "hosts-sync",

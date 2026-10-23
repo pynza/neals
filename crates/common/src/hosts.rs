@@ -70,12 +70,28 @@ pub fn apply_hosts_file(path: &Path, block: &str) -> Result<()> {
         String::new()
     };
     let merged = merge_hosts_file(&existing, block);
-    let tmp = path.with_extension("neals.tmp");
-    std::fs::write(&tmp, &merged).with_context(|| format!("failed to write {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| {
-        let _ = std::fs::remove_file(&tmp);
-        format!("failed to replace {}", path.display())
-    })?;
+    if hosts_file_equivalent(&existing, &merged) {
+        return Ok(());
+    }
+    write_in_place(path, &merged)
+}
+
+fn hosts_file_equivalent(a: &str, b: &str) -> bool {
+    a.trim_end() == b.trim_end()
+}
+
+fn write_in_place(path: &Path, contents: &str) -> Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    file.write_all(contents.as_bytes())
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("failed to sync {}", path.display()))?;
     Ok(())
 }
 
@@ -97,9 +113,16 @@ pub fn apply_hosts_fragment_file(fragment: &Path) -> Result<()> {
     apply_hosts_file(&system_hosts_path(), &block)
 }
 
-/// Best-effort copy for the system path unit (`neals-hosts-sync.path`).
-/// Returns whether the mirror was written.
+/// Best-effort copy for the system path unit. Skips the write when content is
+/// unchanged so PathModified does not fire in a loop.
+///
+/// Only runs when `NEALS_MODE=system` (set by `nealsd@.service`). That keeps
+/// `cargo test` / ad-hoc daemons from clobbering the live `/run/neals/hosts`
+/// mirror on a developer machine.
 pub fn mirror_system_hosts_fragment(block: &str) -> bool {
+    if std::env::var_os("NEALS_MODE").as_deref() != Some(std::ffi::OsStr::new("system")) {
+        return false;
+    }
     let path = Path::new(SYSTEM_HOSTS_MIRROR);
     let Some(parent) = path.parent() else {
         return false;
@@ -107,12 +130,41 @@ pub fn mirror_system_hosts_fragment(block: &str) -> bool {
     if !parent.is_dir() {
         return false;
     }
-    std::fs::write(path, block).is_ok()
+    if path.is_file() {
+        if let Ok(existing) = std::fs::read_to_string(path) {
+            if existing == block {
+                return true;
+            }
+        }
+    }
+    let tmp = parent.join("hosts.neals.tmp");
+    if std::fs::write(&tmp, block).is_err() {
+        return false;
+    }
+    if std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn tmp_dir(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "neals-hosts-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        ensure_dir(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn merge_replaces_previous_block() {
@@ -142,5 +194,56 @@ mod tests {
         assert!(merged.contains("127.0.0.1 localhost"));
         assert!(!merged.contains("BEGIN neals"));
         assert!(!merged.contains("demo_db"));
+    }
+
+    #[test]
+    fn apply_is_idempotent_without_touching_mtime() {
+        let dir = tmp_dir("idem");
+        let hosts = dir.join("hosts");
+        let block = render_host_block(&[(Ipv4Addr::new(127, 53, 0, 1), "demo_db".into())]);
+
+        apply_hosts_file(&hosts, &block).unwrap();
+        let mtime1 = std::fs::metadata(&hosts).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        apply_hosts_file(&hosts, &block).unwrap();
+        let mtime2 = std::fs::metadata(&hosts).unwrap().modified().unwrap();
+        assert_eq!(mtime1, mtime2, "second apply must not rewrite");
+
+        let text = std::fs::read_to_string(&hosts).unwrap();
+        assert!(text.contains("demo_db"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_updates_when_block_changes() {
+        let dir = tmp_dir("chg");
+        let hosts = dir.join("hosts");
+        std::fs::write(&hosts, "127.0.0.1 localhost\n").unwrap();
+
+        let a = render_host_block(&[(Ipv4Addr::new(127, 53, 0, 1), "demo_db".into())]);
+        apply_hosts_file(&hosts, &a).unwrap();
+        assert!(std::fs::read_to_string(&hosts).unwrap().contains("demo_db"));
+
+        let b = render_host_block(&[(Ipv4Addr::new(127, 53, 0, 2), "demo_redis".into())]);
+        apply_hosts_file(&hosts, &b).unwrap();
+        let text = std::fs::read_to_string(&hosts).unwrap();
+        assert!(text.contains("demo_redis"));
+        assert!(!text.contains("demo_db"));
+        assert!(text.contains("127.0.0.1 localhost"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mirror_skipped_without_system_mode() {
+        let prev = std::env::var_os("NEALS_MODE");
+        std::env::remove_var("NEALS_MODE");
+        assert!(
+            !mirror_system_hosts_fragment("# BEGIN neals\n"),
+            "must not touch /run/neals/hosts outside NEALS_MODE=system"
+        );
+        match prev {
+            Some(v) => std::env::set_var("NEALS_MODE", v),
+            None => std::env::remove_var("NEALS_MODE"),
+        }
     }
 }

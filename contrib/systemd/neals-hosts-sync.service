@@ -3,11 +3,10 @@ Description=Apply Neals host DNS aliases to /etc/hosts
 Documentation=file:///usr/local/share/doc/neals/systemd.md
 After=local-fs.target
 ConditionPathExists=/run/neals/hosts
-# Daemon may rewrite the mirror several times during up/down; never leave the
-# path unit wedged on start-limit-hit.
+# Never wedge the path unit if the daemon rewrites the mirror in a burst.
 StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
-# Packaged installs rewrite ExecStart to /usr/bin/neals.
+# Serialize concurrent triggers (up/down races).
 ExecStart=/usr/local/bin/neals hosts apply --from /run/neals/hosts

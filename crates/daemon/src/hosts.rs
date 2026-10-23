@@ -37,13 +37,7 @@ pub fn host_entries(projects: &[(String, Vec<BoundRoute>)]) -> Vec<(Ipv4Addr, St
     entries
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HostsSync {
-    Applied,
-    Deferred,
-}
-
-pub fn sync_host_aliases(projects: &[(String, Vec<BoundRoute>)]) -> Result<HostsSync> {
+pub fn sync_host_aliases(projects: &[(String, Vec<BoundRoute>)]) -> Result<()> {
     let entries = host_entries(projects);
     let block = if entries.is_empty() {
         String::new()
@@ -58,21 +52,18 @@ pub fn sync_host_aliases(projects: &[(String, Vec<BoundRoute>)]) -> Result<Hosts
     let mirrored = mirror_system_hosts_fragment(&block);
 
     let system = system_hosts_path();
-    match apply_hosts_file(&system, &block) {
-        Ok(()) => Ok(HostsSync::Applied),
-        Err(err) => {
-            if !mirrored {
-                eprintln!(
-                    "nealsd: host DNS not applied to {} ({err:#}); \
-                     enable neals-hosts-sync.path or run `sudo neals hosts apply` \
-                     (fragment: {})",
-                    system.display(),
-                    state_path.display()
-                );
-            }
-            Ok(HostsSync::Deferred)
+    if let Err(err) = apply_hosts_file(&system, &block) {
+        if !mirrored {
+            eprintln!(
+                "nealsd: host DNS not applied to {} ({err:#}); \
+                 enable neals-hosts-sync.path or run `sudo neals hosts apply` \
+                 (fragment: {})",
+                system.display(),
+                state_path.display()
+            );
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
