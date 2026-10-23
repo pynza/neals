@@ -1,5 +1,6 @@
 pub mod client;
 pub mod devenv;
+pub mod hosts;
 pub mod ipc;
 pub mod registry;
 pub mod xdg;
@@ -8,7 +9,12 @@ pub use client::call_daemon;
 pub use devenv::{
     env_port_var, env_service_key, has_neals_config, inject_neals_stanza, parse_neals_name,
     parse_neals_routes, parse_neals_services, read_neals_routes, read_neals_services,
-    resolve_project_name, ProjectName, RouteDecl, RouteKind, ServiceDecl, ServiceKind,
+    resolve_project_name, service_host_name, ProjectName, RouteDecl, RouteKind, ServiceDecl,
+    ServiceKind,
+};
+pub use hosts::{
+    apply_from_state, apply_hosts_file, merge_hosts_file, render_host_block, state_hosts_path,
+    system_hosts_path, BEGIN_MARKER, END_MARKER,
 };
 pub use ipc::{
     decode_request, decode_response, encode_request, encode_response, ProjectRuntime, Request,

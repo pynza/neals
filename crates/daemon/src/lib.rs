@@ -1,5 +1,6 @@
 mod caddy;
 mod handler;
+pub mod hosts;
 pub mod netns;
 mod ports;
 mod state;

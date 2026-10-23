@@ -91,6 +91,10 @@ pub fn env_port_var(service: &str) -> String {
     format!("NEALS_{}_PORT", env_service_key(service))
 }
 
+pub fn service_host_name(project: &str, service: &str) -> String {
+    format!("{project}_{service}")
+}
+
 pub fn parse_neals_name(src: &str) -> Option<String> {
     let bindings = collect_neals_literals(src).ok()?;
     let NixLit::Str(name) = bindings.get(&["name".into()][..])? else {
@@ -770,6 +774,12 @@ mod tests {
     fn env_port_var_format() {
         assert_eq!(env_port_var("redis"), "NEALS_REDIS_PORT");
         assert_eq!(env_port_var("redis-insight"), "NEALS_REDIS_INSIGHT_PORT");
+    }
+
+    #[test]
+    fn service_host_name_joins_project_and_service() {
+        assert_eq!(service_host_name("demo", "db"), "demo_db");
+        assert_eq!(service_host_name("laravel-nuxt", "mailpit"), "laravel-nuxt_mailpit");
     }
 
     #[test]

@@ -1,124 +1,131 @@
 use anyhow::{bail, Result};
 use std::collections::HashSet;
-use std::net::TcpListener;
+use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 
 #[derive(Debug, Default)]
-pub struct PortLeases {
-    leased: HashSet<u16>,
+pub struct LoopbackLeases {
+    used: HashSet<(u8, u8)>,
 }
 
-impl PortLeases {
-    pub fn allocate(&mut self) -> Result<u16> {
-        for _ in 0..64 {
-            let listener = TcpListener::bind(("127.0.0.1", 0))?;
-            let port = listener.local_addr()?.port();
-            drop(listener);
-            if self.leased.insert(port) {
-                return Ok(port);
-            }
-        }
-        bail!("failed to allocate a free TCP port on 127.0.0.1");
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostEndpoint {
+    pub ip: Ipv4Addr,
+    pub port: u16,
+}
+
+impl LoopbackLeases {
+    pub fn allocate(&mut self, preferred_port: Option<u16>) -> Result<HostEndpoint> {
+        let ip = self.next_ip()?;
+        let port = match preferred_port {
+            Some(0) | None => bind_ephemeral(ip)?,
+            Some(start) => bind_preferred(ip, start)?,
+        };
+        Ok(HostEndpoint { ip, port })
     }
 
-    pub fn allocate_preferred(&mut self, start: u16) -> Result<u16> {
-        if start == 0 {
-            return self.allocate();
+    pub fn release(&mut self, ip: Ipv4Addr) {
+        if let Some(key) = octet_key(ip) {
+            self.used.remove(&key);
         }
-        let mut port = start;
-        for _ in 0..1024 {
-            if !self.leased.contains(&port) {
-                match TcpListener::bind(("127.0.0.1", port)) {
-                    Ok(listener) => {
-                        let bound = listener.local_addr()?.port();
-                        drop(listener);
-                        if self.leased.insert(bound) {
-                            return Ok(bound);
-                        }
+    }
+
+    pub fn contains(&self, ip: Ipv4Addr) -> bool {
+        octet_key(ip).is_some_and(|k| self.used.contains(&k))
+    }
+
+    fn next_ip(&mut self) -> Result<Ipv4Addr> {
+        for x in 0..=255u8 {
+            for y in 1..=255u8 {
+                let key = (x, y);
+                if self.used.contains(&key) {
+                    continue;
+                }
+                let ip = Ipv4Addr::new(127, 53, x, y);
+                // Probe that the stack accepts this address before leasing it.
+                match TcpListener::bind(SocketAddr::from((ip, 0))) {
+                    Ok(_) => {
+                        self.used.insert(key);
+                        return Ok(ip);
                     }
-                    Err(_) => {}
+                    Err(_) => continue,
                 }
             }
-            if port == u16::MAX {
-                break;
-            }
-            port += 1;
         }
-        bail!("failed to allocate a free TCP port on 127.0.0.1 starting at {start}");
+        bail!("failed to allocate a free 127.53.x.y loopback address");
     }
+}
 
-    pub fn release(&mut self, port: u16) {
-        self.leased.remove(&port);
-    }
+fn octet_key(ip: Ipv4Addr) -> Option<(u8, u8)> {
+    let o = ip.octets();
+    (o[0] == 127 && o[1] == 53).then_some((o[2], o[3]))
+}
 
-    pub fn contains(&self, port: u16) -> bool {
-        self.leased.contains(&port)
+fn bind_ephemeral(ip: Ipv4Addr) -> Result<u16> {
+    for _ in 0..64 {
+        let listener = TcpListener::bind(SocketAddr::from((ip, 0)))?;
+        let port = listener.local_addr()?.port();
+        drop(listener);
+        return Ok(port);
     }
+    bail!("failed to allocate an ephemeral port on {ip}");
+}
+
+fn bind_preferred(ip: Ipv4Addr, start: u16) -> Result<u16> {
+    let mut port = start;
+    for _ in 0..1024 {
+        match TcpListener::bind(SocketAddr::from((ip, port))) {
+            Ok(listener) => {
+                let bound = listener.local_addr()?.port();
+                drop(listener);
+                return Ok(bound);
+            }
+            Err(_) => {
+                if port == u16::MAX {
+                    break;
+                }
+                port += 1;
+            }
+        }
+    }
+    bail!("failed to allocate a free TCP port on {ip} starting at {start}");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
 
     #[test]
-    fn allocate_unique_then_reuse_after_release() {
-        let mut leases = PortLeases::default();
-        let a = leases.allocate().unwrap();
-        let b = leases.allocate().unwrap();
-        assert_ne!(a, b);
-        assert!(leases.contains(a));
-        assert!(leases.contains(b));
-        leases.release(a);
-        assert!(!leases.contains(a));
-        let c = leases.allocate().unwrap();
-        assert!(leases.contains(c));
+    fn allocate_unique_ips_then_reuse_after_release() {
+        let mut leases = LoopbackLeases::default();
+        let a = leases.allocate(Some(0)).unwrap();
+        let b = leases.allocate(Some(0)).unwrap();
+        assert_ne!(a.ip, b.ip);
+        assert!(leases.contains(a.ip));
+        leases.release(a.ip);
+        assert!(!leases.contains(a.ip));
+        let c = leases.allocate(Some(0)).unwrap();
+        assert!(leases.contains(c.ip));
     }
 
     #[test]
-    fn preferred_returns_start_when_free() {
-        let mut leases = PortLeases::default();
-        // High port unlikely to be busy in CI.
+    fn preferred_port_available_on_distinct_ips() {
+        let mut leases = LoopbackLeases::default();
         let start = 45100 + (std::process::id() as u16 % 200);
-        let got = leases.allocate_preferred(start).unwrap();
-        assert_eq!(got, start);
-        leases.release(got);
+        let a = leases.allocate(Some(start)).unwrap();
+        let b = leases.allocate(Some(start)).unwrap();
+        assert_eq!(a.port, start);
+        assert_eq!(b.port, start);
+        assert_ne!(a.ip, b.ip);
+        leases.release(a.ip);
+        leases.release(b.ip);
     }
 
     #[test]
-    fn preferred_skips_leased_then_next() {
-        let mut leases = PortLeases::default();
-        let start = 45300 + (std::process::id() as u16 % 200);
-        let first = leases.allocate_preferred(start).unwrap();
-        assert_eq!(first, start);
-        let second = leases.allocate_preferred(start).unwrap();
-        assert_eq!(second, start + 1);
-        leases.release(first);
-        leases.release(second);
-    }
-
-    #[test]
-    fn preferred_skips_externally_bound_port() {
-        let mut leases = PortLeases::default();
+    fn preferred_skips_busy_port_on_ip() {
         let start = 45500 + (std::process::id() as u16 % 200);
-        let hold = TcpListener::bind(("127.0.0.1", start)).expect("bind hold port");
-        let got = leases.allocate_preferred(start).unwrap();
+        let ip = Ipv4Addr::new(127, 53, 200, 1);
+        let _hold = TcpListener::bind(SocketAddr::from((ip, start))).unwrap();
+        let got = bind_preferred(ip, start).unwrap();
         assert_eq!(got, start + 1);
-        drop(hold);
-        leases.release(got);
-    }
-
-    #[test]
-    fn preferred_services_independent() {
-        let mut leases = PortLeases::default();
-        let redis = 45700 + (std::process::id() as u16 % 100);
-        let postgres = redis + 200;
-        // Occupy redis preferred; postgres preferred must still win.
-        let _hold = TcpListener::bind(("127.0.0.1", redis)).unwrap();
-        let r = leases.allocate_preferred(redis).unwrap();
-        let p = leases.allocate_preferred(postgres).unwrap();
-        assert_eq!(r, redis + 1);
-        assert_eq!(p, postgres);
-        leases.release(r);
-        leases.release(p);
     }
 }

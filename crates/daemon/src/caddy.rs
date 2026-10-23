@@ -191,7 +191,11 @@ pub fn build_caddy_config(
                     let sock = runtime.join(project).join(socket_file);
                     format!("unix/{}", sock.display())
                 }
-                BoundTarget::Tcp { host_port, .. } => format!("127.0.0.1:{host_port}"),
+                BoundTarget::Tcp {
+                    host_ip,
+                    host_port,
+                    ..
+                } => format!("{host_ip}:{host_port}"),
             };
             routes.push(json!({
                 "match": [{ "host": [host] }],
@@ -464,6 +468,7 @@ mod tests {
                 BoundRoute {
                     service: "api".into(),
                     target: BoundTarget::Tcp {
+                        host_ip: "127.53.0.1".parse().unwrap(),
                         host_port: 38471,
                         guest_port: 38471,
                     },
@@ -477,7 +482,7 @@ mod tests {
         assert!(text.contains("unix/"));
         assert!(text.contains("backend.sock"));
         assert!(text.contains("api.demo.localhost"));
-        assert!(text.contains("127.0.0.1:38471"));
+        assert!(text.contains("127.53.0.1:38471"));
         assert!(text.contains("127.0.0.1:2015"));
         assert!(text.contains("automatic_https"));
     }
@@ -493,6 +498,7 @@ mod tests {
                     BoundRoute {
                         service: "be".into(),
                         target: BoundTarget::Tcp {
+                            host_ip: "127.53.0.1".parse().unwrap(),
                             host_port: 11111,
                             guest_port: 11111,
                         },
@@ -501,6 +507,7 @@ mod tests {
                     BoundRoute {
                         service: "admin".into(),
                         target: BoundTarget::Tcp {
+                            host_ip: "127.53.0.2".parse().unwrap(),
                             host_port: 11112,
                             guest_port: 11112,
                         },
@@ -513,6 +520,7 @@ mod tests {
                 vec![BoundRoute {
                     service: "be".into(),
                     target: BoundTarget::Tcp {
+                        host_ip: "127.53.0.3".parse().unwrap(),
                         host_port: 22222,
                         guest_port: 22222,
                     },
@@ -525,9 +533,9 @@ mod tests {
         assert!(text.contains("be.demo.localhost"));
         assert!(text.contains("admin.demo.localhost"));
         assert!(text.contains("be.demo2.localhost"));
-        assert!(text.contains("127.0.0.1:11111"));
-        assert!(text.contains("127.0.0.1:11112"));
-        assert!(text.contains("127.0.0.1:22222"));
+        assert!(text.contains("127.53.0.1:11111"));
+        assert!(text.contains("127.53.0.2:11112"));
+        assert!(text.contains("127.53.0.3:22222"));
         assert!(text.contains(r#""be.demo.localhost""#));
         assert!(text.contains(r#""be.demo2.localhost""#));
     }
@@ -542,6 +550,7 @@ mod tests {
                 BoundRoute {
                     service: "redis".into(),
                     target: BoundTarget::Tcp {
+                        host_ip: "127.53.0.1".parse().unwrap(),
                         host_port: 6379,
                         guest_port: 6379,
                     },
@@ -550,6 +559,7 @@ mod tests {
                 BoundRoute {
                     service: "api".into(),
                     target: BoundTarget::Tcp {
+                        host_ip: "127.53.0.2".parse().unwrap(),
                         host_port: 8000,
                         guest_port: 8000,
                     },
@@ -561,8 +571,8 @@ mod tests {
         let text = cfg.to_string();
         assert!(!text.contains("redis.demo.localhost"));
         assert!(text.contains("api.demo.localhost"));
-        assert!(text.contains("127.0.0.1:8000"));
-        assert!(!text.contains("127.0.0.1:6379"));
+        assert!(text.contains("127.53.0.2:8000"));
+        assert!(!text.contains("127.53.0.1:6379"));
     }
 
     #[test]

@@ -14,12 +14,13 @@ Global: `-y` / `--yes` skips confirmations. `neals --help` for full text.
 | `neals up <name> [-d]` | Start project; follow process logs unless `-d` |
 | `neals down <name>` | Stop project |
 | `neals refresh <name>` | Soft re-eval (`--update`, `--hard`) |
-| `neals status` | Running projects, PIDs, services (real ports) |
+| `neals status` | Running projects, PIDs, host endpoints |
 | `neals logs <name> [-f]` | Tail logs; `-f` follows all processes |
 | `neals bash <name>` | Shell in the project's netns (project must be up) |
 | `neals info <name>` | Run `devenv info` for the project |
 | `neals exec <name> -- …` | One-shot command in that netns + devenv (literal argv) |
-| `neals doctor` | Check tools, dirs, bind, daemon |
+| `neals hosts [show\|apply]` | Host DNS fragment (`sudo neals hosts apply`) |
+| `neals doctor` | Check tools, dirs, hosts sync, daemon |
 | `neals completions <shell>` | Print completion snippet for shell rc |
 
 ## Log follow keys

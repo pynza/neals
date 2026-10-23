@@ -53,6 +53,7 @@ pub fn bwrap_command(
     project_dir: &Path,
     runtime_neals: &Path,
     resolv_conf: &Path,
+    hosts_file: &Path,
 ) -> Command {
     let uid = nix::unistd::getuid();
     let gid = nix::unistd::getgid();
@@ -79,6 +80,7 @@ pub fn bwrap_command(
     mount_writable_run(&mut cmd, runtime_neals);
     mount_session_runtime(&mut cmd, uid);
     mount_resolv_conf(&mut cmd, resolv_conf);
+    mount_hosts_file(&mut cmd, hosts_file);
     cmd.arg("--chdir")
         .arg(project_dir)
         .args(["--", "/bin/sh", "-c"])
@@ -114,7 +116,15 @@ fn mount_session_runtime(cmd: &mut Command, uid: nix::unistd::Uid) {
 }
 
 fn mount_resolv_conf(cmd: &mut Command, resolv_conf: &Path) {
-    let Ok(dest) = std::fs::canonicalize("/etc/resolv.conf") else {
+    mount_etc_file(cmd, resolv_conf, "/etc/resolv.conf");
+}
+
+fn mount_hosts_file(cmd: &mut Command, hosts_file: &Path) {
+    mount_etc_file(cmd, hosts_file, "/etc/hosts");
+}
+
+fn mount_etc_file(cmd: &mut Command, source: &Path, dest_hint: &str) {
+    let Ok(dest) = std::fs::canonicalize(dest_hint) else {
         return;
     };
     if let Ok(rel) = dest.strip_prefix("/run") {
@@ -126,7 +136,7 @@ fn mount_resolv_conf(cmd: &mut Command, resolv_conf: &Path) {
             }
         }
     }
-    cmd.arg("--ro-bind").arg(resolv_conf).arg(&dest);
+    cmd.arg("--ro-bind").arg(source).arg(&dest);
 }
 
 fn clear_caps_for_userns() -> std::io::Result<()> {
@@ -243,14 +253,15 @@ pub fn start_proxies(bound: &[BoundRoute], netns_pid: u32) -> Result<Vec<Child>>
     let mut helpers = Vec::new();
     for route in bound {
         let BoundTarget::Tcp {
+            host_ip,
             host_port,
             guest_port,
         } = route.target
         else {
             continue;
         };
-        let listener = std::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], host_port)))
-            .with_context(|| format!("bind 127.0.0.1:{host_port}"))?;
+        let listener = std::net::TcpListener::bind(SocketAddr::from((host_ip, host_port)))
+            .with_context(|| format!("bind {host_ip}:{host_port}"))?;
         let child = Command::new(&exe)
             .args([
                 PROXY_MODE_ARG,
@@ -261,7 +272,7 @@ pub fn start_proxies(bound: &[BoundRoute], netns_pid: u32) -> Result<Vec<Child>>
             .stdout(Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .with_context(|| format!("spawn netns proxy for 127.0.0.1:{host_port}"))?;
+            .with_context(|| format!("spawn netns proxy for {host_ip}:{host_port}"))?;
         helpers.push(child);
     }
     Ok(helpers)
@@ -382,7 +393,15 @@ mod tests {
             return;
         }
         let resolv = Path::new("/run/neals/demo/resolv.conf");
-        let cmd = bwrap_command("true", &[], Path::new("/tmp"), Path::new("/run/neals"), resolv);
+        let hosts = Path::new("/run/neals/demo/hosts");
+        let cmd = bwrap_command(
+            "true",
+            &[],
+            Path::new("/tmp"),
+            Path::new("/run/neals"),
+            resolv,
+            hosts,
+        );
         let argv: Vec<String> = cmd
             .as_std()
             .get_args()
@@ -398,6 +417,14 @@ mod tests {
             .position(|w| w[0] == "--ro-bind" && w[1] == resolv.to_string_lossy())
             .expect("bwrap should bind the generated resolv.conf");
         assert!(bind > tmpfs, "resolv.conf bound before the tmpfs: {argv:?}");
+        let hosts_bind = argv
+            .windows(2)
+            .position(|w| w[0] == "--ro-bind" && w[1] == hosts.to_string_lossy())
+            .expect("bwrap should bind the generated hosts file");
+        assert!(
+            hosts_bind > tmpfs,
+            "hosts bound before the tmpfs: {argv:?}"
+        );
 
         let uid = nix::unistd::getuid();
         let session = format!("/run/user/{uid}");

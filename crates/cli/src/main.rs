@@ -33,7 +33,7 @@ contrib/systemd/README.md for system (portless :80) install.
 const AFTER_LONG_HELP: &str = "\
 Directories:
   ~/.config/neals/projects.json     project registry
-  ~/.local/state/neals/             logs, caddy.json, shell rc snippets
+  ~/.local/state/neals/             logs, caddy.json, shell rc snippets, hosts fragment
   $XDG_RUNTIME_DIR/neals/           ad-hoc IPC + sockets
   /run/neals/nealsd.sock            system daemon socket (if installed)
   <project>/.neals/                 convenience symlinks to UNIX sockets
@@ -219,11 +219,32 @@ Use `neals bash` for an interactive session."
         command: Vec<String>,
     },
 
+    #[command(
+        about = "Manage host DNS aliases for TCP services",
+        long_about = "\
+Neals maps `{project}_{service}` on the host to a dedicated 127.53.x.y address
+(preferred port). Inside the project netns, the short service name also works.\n\n\
+`nealsd` writes ~/.local/state/neals/hosts and tries to merge it into /etc/hosts.
+If that fails (no root), run `sudo neals hosts apply`."
+    )]
+    Hosts {
+        #[command(subcommand)]
+        action: Option<HostsCmd>,
+    },
+
     #[command(about = "Print shell completion code")]
     Completions {
         #[arg(help = "Target shell")]
         shell: CompletionShell,
     },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum HostsCmd {
+    #[command(about = "Show the current hosts fragment (default)")]
+    Show,
+    #[command(about = "Merge the fragment into /etc/hosts (needs write access)")]
+    Apply,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -337,9 +358,46 @@ fn run() -> Result<ExitCode> {
             let path = project_path(&project)?;
             shell::run_project_exec(&project, &path, &command)
         }
+        Commands::Hosts { action } => {
+            cmd_hosts(action.unwrap_or(HostsCmd::Show))?;
+            Ok(ExitCode::SUCCESS)
+        }
         Commands::Completions { shell } => {
             cmd_completions(shell)?;
             Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+fn cmd_hosts(action: HostsCmd) -> Result<()> {
+    match action {
+        HostsCmd::Show => {
+            let path = neals_common::state_hosts_path()?;
+            if !path.exists() {
+                style::print_warn("no hosts fragment yet (start a project with `neals up`)");
+                return Ok(());
+            }
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            if text.trim().is_empty() {
+                println!("# (empty — no TCP services running)");
+            } else {
+                print!("{text}");
+            }
+            style::eprint_dim(&format!(
+                "fragment {}; system {}",
+                path.display(),
+                neals_common::system_hosts_path().display()
+            ));
+            Ok(())
+        }
+        HostsCmd::Apply => {
+            neals_common::apply_from_state()?;
+            style::print_ok(&format!(
+                "applied hosts fragment to {}",
+                neals_common::system_hosts_path().display()
+            ));
+            Ok(())
         }
     }
 }

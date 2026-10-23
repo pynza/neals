@@ -60,6 +60,7 @@ impl TestEnv {
         std::env::set_var("XDG_RUNTIME_DIR", &runtime);
         std::env::set_var("NEALS_UP_CMD", "sleep 3600");
         std::env::set_var("NEALS_CADDY_CMD", "-");
+        std::env::set_var("NEALS_HOSTS_FILE", state.join("etc-hosts"));
 
         let project_dir = root.join("demo-project");
         fs::create_dir_all(&project_dir).unwrap();
@@ -114,6 +115,20 @@ async fn roundtrip(state: &Arc<Mutex<AppState>>, request: Request) -> Response {
     decode_response(&line).unwrap()
 }
 
+fn endpoint_from_label(label: &str) -> (String, u16) {
+    let (_, right) = label
+        .split_once('→')
+        .unwrap_or_else(|| panic!("no arrow in label: {label}"));
+    let addr = right
+        .split_whitespace()
+        .next()
+        .unwrap_or_else(|| panic!("no addr in label: {label}"));
+    let (ip, port) = addr
+        .rsplit_once(':')
+        .unwrap_or_else(|| panic!("no port in label: {label}"));
+    (ip.to_string(), port.parse().expect("port"))
+}
+
 #[tokio::test]
 async fn ping_up_status_down() {
     require_netns!();
@@ -144,7 +159,7 @@ async fn ping_up_status_down() {
                 .iter()
                 .any(|r| r == "http://backend.demo.localhost:2015/"));
             assert!(projects[0].routes.iter().any(|r| {
-                r.starts_with("http://api.demo.localhost:2015/ → 127.0.0.1:")
+                r.starts_with("http://api.demo.localhost:2015/ → 127.53.")
             }));
         }
         other => panic!("expected Status, got {other:?}"),
@@ -373,18 +388,17 @@ async fn multi_project_tcp_routes_have_distinct_hosts_and_ports() {
             let demo_route = demo
                 .routes
                 .iter()
-                .find(|r| r.starts_with("http://be.demo.localhost:2015/ → 127.0.0.1:"))
+                .find(|r| r.starts_with("http://be.demo.localhost:2015/ → 127.53."))
                 .expect("demo be route");
             let other_route = other
                 .routes
                 .iter()
-                .find(|r| r.starts_with("http://be.other.localhost:2015/ → 127.0.0.1:"))
+                .find(|r| r.starts_with("http://be.other.localhost:2015/ → 127.53."))
                 .expect("other be route");
 
-            let demo_port: u16 = demo_route.rsplit(':').next().unwrap().parse().unwrap();
-            let other_port: u16 = other_route.rsplit(':').next().unwrap().parse().unwrap();
-            assert_ne!(demo_port, other_port, "projects must not share TCP ports");
-            assert_ne!(demo_route, other_route);
+            let demo_ep = endpoint_from_label(demo_route);
+            let other_ep = endpoint_from_label(other_route);
+            assert_ne!(demo_ep, other_ep, "projects must not share host endpoints");
         }
         other => panic!("expected Status, got {other:?}"),
     }
@@ -435,13 +449,16 @@ async fn preferred_ports_private_and_proxy_status() {
         Response::Status { projects } => {
             let demo = &projects[0];
             assert!(
-                demo.routes.iter().any(|r| r == "redis → 127.0.0.1:45901"),
+                demo.routes.iter().any(|r| {
+                    r.starts_with("demo_redis → 127.53.") && r.ends_with(":45901")
+                }),
                 "private redis label missing: {:?}",
                 demo.routes
             );
             assert!(
                 demo.routes.iter().any(|r| {
-                    r.starts_with("http://api.demo.localhost:2015/ → 127.0.0.1:45911")
+                    r.starts_with("http://api.demo.localhost:2015/ → 127.53.")
+                        && r.contains(":45911")
                 }),
                 "proxied api label missing: {:?}",
                 demo.routes
@@ -449,6 +466,19 @@ async fn preferred_ports_private_and_proxy_status() {
         }
         other => panic!("expected Status, got {other:?}"),
     }
+
+    let hosts = std::env::var("NEALS_HOSTS_FILE").unwrap();
+    let hosts_text = fs::read_to_string(&hosts).expect("system hosts fragment");
+    assert!(
+        hosts_text.contains("demo_redis") && hosts_text.contains("demo_api"),
+        "host DNS should list long names: {hosts_text}"
+    );
+    let guest_hosts = std::env::var("XDG_RUNTIME_DIR").unwrap() + "/neals/demo/hosts";
+    let guest_text = fs::read_to_string(&guest_hosts).expect("guest hosts");
+    assert!(
+        guest_text.contains("127.0.0.1 redis demo_redis\n"),
+        "guest hosts should alias short+long: {guest_text}"
+    );
 
     let _ = roundtrip(
         &state,
@@ -498,29 +528,20 @@ async fn two_projects_same_preferred_get_distinct_ports() {
 
     match roundtrip(&state, Request::Status).await {
         Response::Status { projects } => {
-            let port = |name: &str| -> u16 {
+            let endpoint = |name: &str| -> (String, u16) {
                 let p = projects.iter().find(|p| p.name == name).unwrap();
                 let label = p
                     .routes
                     .iter()
-                    .find(|r| r.starts_with("redis → 127.0.0.1:"))
+                    .find(|r| r.starts_with(&format!("{name}_redis → 127.53.")))
                     .unwrap();
-                label
-                    .split("127.0.0.1:")
-                    .nth(1)
-                    .unwrap()
-                    .split_whitespace()
-                    .next()
-                    .unwrap()
-                    .parse()
-                    .unwrap()
+                endpoint_from_label(label)
             };
-            let a = port("demo");
-            let b = port("other");
-            assert_ne!(a, b);
-            assert!(a >= 46101);
-            assert!(b >= 46101);
-            assert!([a, b].contains(&46101));
+            let a = endpoint("demo");
+            let b = endpoint("other");
+            assert_ne!(a.0, b.0, "projects must get distinct loopback IPs");
+            assert_eq!(a.1, 46101);
+            assert_eq!(b.1, 46101);
         }
         other => panic!("expected Status, got {other:?}"),
     }
@@ -579,26 +600,20 @@ async fn concurrent_up_same_preferred_no_collision() {
     match roundtrip(&state, Request::Status).await {
         Response::Status { projects } => {
             assert_eq!(projects.len(), 2);
-            let ports: Vec<u16> = projects
+            let endpoints: Vec<(String, u16)> = projects
                 .iter()
                 .map(|p| {
                     let label = p
                         .routes
                         .iter()
-                        .find(|r| r.starts_with("redis → 127.0.0.1:"))
+                        .find(|r| r.starts_with(&format!("{}_redis → 127.53.", p.name)))
                         .unwrap();
-                    label
-                        .split("127.0.0.1:")
-                        .nth(1)
-                        .unwrap()
-                        .split_whitespace()
-                        .next()
-                        .unwrap()
-                        .parse()
-                        .unwrap()
+                    endpoint_from_label(label)
                 })
                 .collect();
-            assert_ne!(ports[0], ports[1]);
+            assert_ne!(endpoints[0].0, endpoints[1].0);
+            assert_eq!(endpoints[0].1, 46301);
+            assert_eq!(endpoints[1].1, 46301);
         }
         other => panic!("expected Status, got {other:?}"),
     }
@@ -733,37 +748,31 @@ time.sleep(3600)
     assert_eq!(guest_port1, 6379);
     assert_eq!(guest_port2, 6379);
 
-    let (host_port1, host_port2) = match roundtrip(&state, Request::Status).await {
+    let endpoints = match roundtrip(&state, Request::Status).await {
         Response::Status { projects } => {
-            let label_port = |name: &str| -> u16 {
+            let label_ep = |name: &str| -> (String, u16) {
                 let p = projects.iter().find(|p| p.name == name).unwrap();
-                p.routes
+                let label = p
+                    .routes
                     .iter()
-                    .find(|r| r.starts_with("redis → 127.0.0.1:"))
-                    .unwrap()
-                    .split("127.0.0.1:")
-                    .nth(1)
-                    .unwrap()
-                    .split_whitespace()
-                    .next()
-                    .unwrap()
-                    .parse()
-                    .unwrap()
+                    .find(|r| r.starts_with(&format!("{name}_redis → 127.53.")))
+                    .unwrap();
+                endpoint_from_label(label)
             };
-            let h1 = label_port("redis-project-1");
-            let h2 = label_port("redis-project-2");
-            assert_ne!(h1, h2);
-            assert!(h1 >= 6379);
-            assert!(h2 >= 6379);
-            (h1, h2)
+            let e1 = label_ep("redis-project-1");
+            let e2 = label_ep("redis-project-2");
+            assert_ne!(e1.0, e2.0);
+            assert_eq!(e1.1, 6379);
+            assert_eq!(e2.1, 6379);
+            [e1, e2]
         }
         other => panic!("expected Status, got {other:?}"),
     };
 
-    for port in [host_port1, host_port2] {
-        let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+    for (ip, port) in endpoints {
+        let stream = tokio::net::TcpStream::connect((ip.as_str(), port))
             .await
-            .unwrap_or_else(|e| panic!("connect {port}: {e}"));
+            .unwrap_or_else(|e| panic!("connect {ip}:{port}: {e}"));
         drop(stream);
     }
 

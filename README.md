@@ -4,10 +4,12 @@ Local platform orchestrator for [devenv](https://devenv.sh) projects.
 
 https://github.com/user-attachments/assets/6bed70a0-1ba7-4c77-afd1-c9acb5ebc896
 
-Neals runs each project in its own network namespace, leases host loopback
-ports without collisions, reverse-proxies into guest `127.0.0.1` binds, and
-exposes selected HTTP services at `{service}.{project}.localhost` via Caddy —
-with multiplexed process logs and a project shell in the same namespace.
+Neals runs each project in its own network namespace, gives each TCP service a
+dedicated `127.53.x.y` host address (preferred ports without collisions),
+reverse-proxies into guest `127.0.0.1` binds, and exposes selected HTTP
+services at `{service}.{project}.localhost` via Caddy — with hybrid DNS
+names (`db` in-guest, `{project}_db` on the host), multiplexed process logs,
+and a project shell in the same namespace.
 
 ## Install
 
@@ -59,9 +61,12 @@ In a project with `devenv.nix`:
 Wire the app yourself (Neals does **not** edit `.env`):
 
 ```dotenv
-REDIS_HOST=127.0.0.1
+REDIS_HOST=redis
 REDIS_PORT=${NEALS_REDIS_PORT}
 ```
+
+From the host: `redis-cli -h demo_redis` (after `sudo neals hosts apply` if
+`/etc/hosts` is not writable by `nealsd`).
 
 ```bash
 neals init             # skip if the neals block is already there

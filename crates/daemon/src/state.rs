@@ -1,11 +1,13 @@
 use crate::caddy::CaddyManager;
+use crate::hosts;
 use crate::netns::SlirpHandle;
-use crate::ports::PortLeases;
-use neals_common::ProjectRuntime;
+use crate::ports::LoopbackLeases;
+use neals_common::{service_host_name, ProjectRuntime};
 use nix::errno::Errno;
 use nix::sys::signal::{kill, killpg, Signal};
 use nix::unistd::Pid;
 use std::collections::{HashMap, HashSet};
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tokio::process::Child;
@@ -14,7 +16,11 @@ use tokio::time::{timeout, Duration};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoundTarget {
     Unix { socket_file: String },
-    Tcp { host_port: u16, guest_port: u16 },
+    Tcp {
+        host_ip: Ipv4Addr,
+        host_port: u16,
+        guest_port: u16,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +35,10 @@ impl BoundRoute {
         format!("{}.{project}.localhost", self.service)
     }
 
+    pub fn dns_name(&self, project: &str) -> String {
+        service_host_name(project, &self.service)
+    }
+
     pub fn status_label(&self, project: &str, proxy_port: u16) -> String {
         match &self.target {
             BoundTarget::Unix { .. } => {
@@ -40,6 +50,7 @@ impl BoundRoute {
                 }
             }
             BoundTarget::Tcp {
+                host_ip,
                 host_port,
                 guest_port,
             } if self.proxy => {
@@ -50,24 +61,30 @@ impl BoundRoute {
                     format!("http://{host}:{proxy_port}/")
                 };
                 if host_port == guest_port {
-                    format!("{url} → 127.0.0.1:{host_port}")
+                    format!("{url} → {host_ip}:{host_port}")
                 } else {
-                    format!("{url} → 127.0.0.1:{host_port} (guest :{guest_port})")
+                    format!("{url} → {host_ip}:{host_port} (guest :{guest_port})")
                 }
             }
             BoundTarget::Tcp {
+                host_ip,
                 host_port,
                 guest_port,
             } => {
+                let name = self.dns_name(project);
                 if host_port == guest_port {
-                    format!("{} → 127.0.0.1:{host_port}", self.service)
+                    format!("{name} → {host_ip}:{host_port}")
                 } else {
-                    format!(
-                        "{} → 127.0.0.1:{host_port} (guest :{guest_port})",
-                        self.service
-                    )
+                    format!("{name} → {host_ip}:{host_port} (guest :{guest_port})")
                 }
             }
+        }
+    }
+
+    pub fn host_ip(&self) -> Option<Ipv4Addr> {
+        match self.target {
+            BoundTarget::Tcp { host_ip, .. } => Some(host_ip),
+            BoundTarget::Unix { .. } => None,
         }
     }
 
@@ -101,7 +118,7 @@ pub struct RunningProject {
 pub struct AppState {
     pub projects: HashMap<String, RunningProject>,
     pub caddy: CaddyManager,
-    pub leases: PortLeases,
+    pub leases: LoopbackLeases,
 }
 
 impl Default for AppState {
@@ -109,7 +126,7 @@ impl Default for AppState {
         Self {
             projects: HashMap::new(),
             caddy: CaddyManager::disabled(),
-            leases: PortLeases::default(),
+            leases: LoopbackLeases::default(),
         }
     }
 }
@@ -165,14 +182,21 @@ impl AppState {
             .collect()
     }
 
+    pub fn sync_hosts(&self) {
+        let snapshot = self.bound_snapshot();
+        if let Err(err) = hosts::sync_host_aliases(&snapshot) {
+            eprintln!("nealsd: hosts sync: {err:#}");
+        }
+    }
+
     pub async fn finish_cleanup(&mut self, running: &RunningProject) {
         if let Ok(runtime) = crate::caddy::project_runtime_dir(&running.name) {
             sweep_project_processes(&runtime).await;
         }
         running.slirp.stop().await;
         for route in &running.bound {
-            if let Some(port) = route.tcp_port() {
-                self.leases.release(port);
+            if let Some(ip) = route.host_ip() {
+                self.leases.release(ip);
             }
         }
         let _ = crate::caddy::cleanup_neals_dir(&running.project_path);
@@ -180,6 +204,7 @@ impl AppState {
         if let Err(err) = self.caddy.apply_routes(&snapshot).await {
             eprintln!("caddy apply after cleanup `{}`: {err:#}", running.name);
         }
+        self.sync_hosts();
     }
 
     pub async fn stop(&mut self, name: &str) -> Result<(), String> {

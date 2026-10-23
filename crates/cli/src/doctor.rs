@@ -2,8 +2,8 @@ use crate::daemon_client::find_nealsd;
 use crate::style;
 use anyhow::Result;
 use neals_common::{
-    call_daemon, config_dir, ensure_dir, runtime_dir, state_dir, Request, Response,
-    SYSTEM_DAEMON_SOCKET,
+    call_daemon, config_dir, ensure_dir, runtime_dir, state_dir, state_hosts_path,
+    system_hosts_path, BEGIN_MARKER, Request, Response, SYSTEM_DAEMON_SOCKET,
 };
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -71,6 +71,7 @@ pub fn run_doctor() -> Result<ExitCode> {
         check_dir_writable("config", config_dir()?),
         check_dir_writable("state", state_dir()?),
         check_dir_writable("runtime", runtime_dir()?),
+        check_hosts_sync(),
         check_daemon_ping(),
     ];
 
@@ -170,6 +171,38 @@ fn check_system_daemon() -> Check {
         Check::info("system", format!("{SYSTEM_DAEMON_SOCKET}"))
     } else {
         Check::warn("system", "ad-hoc mode; see contrib/systemd/")
+    }
+}
+
+fn check_hosts_sync() -> Check {
+    let Ok(fragment_path) = state_hosts_path() else {
+        return Check::warn("hosts", "cannot resolve state dir");
+    };
+    let fragment = std::fs::read_to_string(&fragment_path).unwrap_or_default();
+    if fragment.trim().is_empty() || !fragment.contains(BEGIN_MARKER) {
+        return Check::info("hosts", "no TCP aliases yet");
+    }
+    let system = system_hosts_path();
+    let Ok(system_text) = std::fs::read_to_string(&system) else {
+        return Check::warn(
+            "hosts",
+            format!(
+                "cannot read {}; run `sudo neals hosts apply`",
+                system.display()
+            ),
+        );
+    };
+    let want = fragment.trim();
+    if system_text.contains(want) {
+        Check::ok("hosts", format!("{} synced", system.display()))
+    } else {
+        Check::warn(
+            "hosts",
+            format!(
+                "fragment not in {}; run `sudo neals hosts apply`",
+                system.display()
+            ),
+        )
     }
 }
 

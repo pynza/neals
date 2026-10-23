@@ -2,34 +2,36 @@
 name: neals
 description: >-
   Local platform orchestrator for devenv projects (neals / nealsd): netns,
-  host port leases, Caddy routes at {service}.{project}.localhost, logs and
-  project shell. Use when the user mentions neals, nealsd, neals up/down,
-  *.localhost project URLs, NEALS_*_PORT, devenv.nix neals block, or running
-  devenv apps under Neals.
+  127.53.x.y host endpoints, hybrid DNS (short in-guest / project_service on
+  host), Caddy routes at {service}.{project}.localhost, logs and project
+  shell. Use when the user mentions neals, nealsd, neals up/down, *.localhost
+  project URLs, NEALS_*_PORT, devenv.nix neals block, or running devenv apps
+  under Neals.
 ---
 
 # Neals
 
 Linux-only orchestrator for [devenv](https://devenv.sh) projects. A daemon
 (`nealsd`) registers projects, starts each in its own network namespace,
-leases host loopback TCP ports, reverse-proxies into guest `127.0.0.1`
-binds, and exposes selected HTTP services as
-`http://{service}.{project}.localhost` via Caddy.
+assigns each TCP service a `127.53.x.y` host endpoint on the preferred port,
+reverse-proxies into guest `127.0.0.1` binds, and exposes selected HTTP
+services as `http://{service}.{project}.localhost` via Caddy.
 
 Upstream docs (Neals repository): `README.md`, `docs/`, `docs/examples/`.
 
 ## Mental model
 
-- **Guest vs host ports**: preferred ports in `devenv.nix` are binds *inside*
-  the project netns. Host gets a leased loopback port (often the same number;
-  if taken, a higher one). `neals status` / `neals up` show **host** ports.
+- **Guest vs host**: preferred ports in `devenv.nix` bind *inside* the netns
+  on `127.0.0.1`. Host proxies listen on a unique `127.53.x.y` at the same
+  preferred port. `neals status` shows host endpoints.
+- **DNS**: in-guest short name (`db`) + `{project}_{service}`; on the host
+  only the long name (needs `/etc/hosts` sync — `sudo neals hosts apply`).
 - **Proxy**: only services with `proxy = true` (or UNIX socket) get a Caddy
-  hostname. Plain `port` services are private (reach via host lease or
-  `neals bash` / `neals exec`).
+  hostname. Plain `port` services are private (host DNS / `neals bash`).
 - **Binds**: apps must listen on `127.0.0.1` at the guest port (not `0.0.0.0`).
 - **Env**: Neals injects `NEALS_<SERVICE>_PORT` (and `NEALS_RUNTIME` for
-  sockets). It does **not** edit `.env`; wire `${NEALS_…}` yourself
-  (e.g. `REDIS_PORT=${NEALS_REDIS_PORT}`).
+  sockets). It does **not** edit `.env`; wire e.g. `DB_HOST=db` +
+  `${NEALS_DB_PORT}`.
 - **Daemon**: systemd `nealsd@$USER` (system mode, Caddy often on `:80`) or
   ad-hoc auto-start from the CLI (URLs may need `:{port}` if not on 80).
 
@@ -71,6 +73,7 @@ Env names: service → uppercase, `-` → `_` (`api-backend` → `NEALS_API_BACK
 | `init` / `register` / `list` / `unregister` / `prune` | Registry |
 | `up` / `down` / `refresh` (`--update`, `--hard`) | Lifecycle |
 | `status` / `logs` / `info` / `doctor` | Inspect |
+| `hosts` / `hosts apply` | Show / install host DNS fragment |
 | `bash` / `exec -- …` | Enter netns (interactive / one-shot) |
 
 Global: `-y` / `--yes` skips confirmations.

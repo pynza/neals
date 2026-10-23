@@ -109,7 +109,27 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
             return Err(format!("resolv.conf: {e:#}"));
         }
     };
-    let mut cmd = bwrap_command(&program, &args, &project.path, &runtime_root, &resolv_conf);
+    let tcp_services: Vec<String> = bound
+        .iter()
+        .filter(|r| r.guest_tcp_port().is_some())
+        .map(|r| r.service.clone())
+        .collect();
+    let hosts_file = match crate::hosts::write_guest_hosts(&runtime_proj, name, &tcp_services) {
+        Ok(p) => p,
+        Err(e) => {
+            let mut state = state.lock().await;
+            release_bound_ports(&mut state, &bound);
+            return Err(format!("hosts: {e:#}"));
+        }
+    };
+    let mut cmd = bwrap_command(
+        &program,
+        &args,
+        &project.path,
+        &runtime_root,
+        &resolv_conf,
+        &hosts_file,
+    );
     let session_runtime = PathBuf::from(format!("/run/user/{}", nix::unistd::getuid()));
     if session_runtime.is_dir() {
         cmd.env("XDG_RUNTIME_DIR", session_runtime);
@@ -227,6 +247,7 @@ async fn up_project(name: &str, state: &Arc<Mutex<AppState>>) -> Result<(), Stri
             _proxy_helpers: proxy_helpers,
         },
     );
+    state.sync_hosts();
     Ok(())
 }
 
@@ -260,18 +281,18 @@ fn bind_one(state: &mut AppState, decl: &ServiceDecl) -> Result<BoundRoute, Stri
             preferred_port,
             proxy,
         } => {
-            let host_port = match preferred_port {
-                Some(start) => state.leases.allocate_preferred(*start),
-                None => state.leases.allocate(),
-            }
-            .map_err(|e| format!("TCP port alloc for `{}`: {e}", decl.service))?;
+            let endpoint = state
+                .leases
+                .allocate(*preferred_port)
+                .map_err(|e| format!("TCP endpoint alloc for `{}`: {e}", decl.service))?;
 
-            let guest_port = preferred_port.unwrap_or(host_port);
+            let guest_port = preferred_port.unwrap_or(endpoint.port);
 
             Ok(BoundRoute {
                 service: decl.service.clone(),
                 target: BoundTarget::Tcp {
-                    host_port,
+                    host_ip: endpoint.ip,
+                    host_port: endpoint.port,
                     guest_port,
                 },
                 proxy: *proxy,
@@ -282,8 +303,8 @@ fn bind_one(state: &mut AppState, decl: &ServiceDecl) -> Result<BoundRoute, Stri
 
 fn release_bound_ports(state: &mut AppState, bound: &[BoundRoute]) {
     for route in bound {
-        if let Some(port) = route.tcp_port() {
-            state.leases.release(port);
+        if let Some(ip) = route.host_ip() {
+            state.leases.release(ip);
         }
     }
 }
