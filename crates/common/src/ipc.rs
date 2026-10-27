@@ -25,7 +25,25 @@ pub struct ProjectRuntime {
     pub netns_pid: u32,
     pub uptime_secs: u64,
     #[serde(default)]
-    pub routes: Vec<String>,
+    pub services: Vec<ServiceRuntime>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServiceRuntime {
+    pub name: String,
+    pub host: String,
+    #[serde(default)]
+    pub address: String,
+}
+
+impl ServiceRuntime {
+    pub fn summary(&self) -> String {
+        if self.address.is_empty() {
+            self.host.clone()
+        } else {
+            format!("{} → {}", self.host, self.address)
+        }
+    }
 }
 
 fn encode_line<T: Serialize>(value: &T) -> Result<String> {
@@ -109,7 +127,11 @@ mod tests {
                     pid: 42,
                     netns_pid: 43,
                     uptime_secs: 120,
-                    routes: vec!["backend.demo.localhost".into()],
+                    services: vec![ServiceRuntime {
+                        name: "backend".into(),
+                        host: "http://backend.demo.localhost/".into(),
+                        address: String::new(),
+                    }],
                 }],
             },
         ];

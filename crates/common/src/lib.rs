@@ -19,7 +19,7 @@ pub use hosts::{
 };
 pub use ipc::{
     decode_request, decode_response, encode_request, encode_response, ProjectRuntime, Request,
-    Response,
+    Response, ServiceRuntime,
 };
 pub use registry::{Project, Registry};
 

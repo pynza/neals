@@ -115,17 +115,14 @@ async fn roundtrip(state: &Arc<Mutex<AppState>>, request: Request) -> Response {
     decode_response(&line).unwrap()
 }
 
-fn endpoint_from_label(label: &str) -> (String, u16) {
-    let (_, right) = label
-        .split_once('→')
-        .unwrap_or_else(|| panic!("no arrow in label: {label}"));
-    let addr = right
+fn endpoint_from_address(address: &str) -> (String, u16) {
+    let addr = address
         .split_whitespace()
         .next()
-        .unwrap_or_else(|| panic!("no addr in label: {label}"));
+        .unwrap_or_else(|| panic!("no addr in: {address}"));
     let (ip, port) = addr
         .rsplit_once(':')
-        .unwrap_or_else(|| panic!("no port in label: {label}"));
+        .unwrap_or_else(|| panic!("no port in: {address}"));
     (ip.to_string(), port.parse().expect("port"))
 }
 
@@ -153,13 +150,16 @@ async fn ping_up_status_down() {
             assert_eq!(projects.len(), 1);
             assert_eq!(projects[0].name, "demo");
             assert!(projects[0].pid > 0);
-            assert_eq!(projects[0].routes.len(), 2);
-            assert!(projects[0]
-                .routes
-                .iter()
-                .any(|r| r == "http://backend.demo.localhost:2015/"));
-            assert!(projects[0].routes.iter().any(|r| {
-                r.starts_with("http://api.demo.localhost:2015/ → 127.53.")
+            assert_eq!(projects[0].services.len(), 2);
+            assert!(projects[0].services.iter().any(|s| {
+                s.name == "backend"
+                    && s.host == "http://backend.demo.localhost:2015/"
+                    && s.address.is_empty()
+            }));
+            assert!(projects[0].services.iter().any(|s| {
+                s.name == "api"
+                    && s.host == "http://api.demo.localhost:2015/"
+                    && s.address.starts_with("127.53.")
             }));
         }
         other => panic!("expected Status, got {other:?}"),
@@ -385,19 +385,19 @@ async fn multi_project_tcp_routes_have_distinct_hosts_and_ports() {
             let demo = projects.iter().find(|p| p.name == "demo").unwrap();
             let other = projects.iter().find(|p| p.name == "other").unwrap();
 
-            let demo_route = demo
-                .routes
+            let demo_svc = demo
+                .services
                 .iter()
-                .find(|r| r.starts_with("http://be.demo.localhost:2015/ → 127.53."))
-                .expect("demo be route");
-            let other_route = other
-                .routes
+                .find(|s| s.name == "be" && s.address.starts_with("127.53."))
+                .expect("demo be service");
+            let other_svc = other
+                .services
                 .iter()
-                .find(|r| r.starts_with("http://be.other.localhost:2015/ → 127.53."))
-                .expect("other be route");
+                .find(|s| s.name == "be" && s.address.starts_with("127.53."))
+                .expect("other be service");
 
-            let demo_ep = endpoint_from_label(demo_route);
-            let other_ep = endpoint_from_label(other_route);
+            let demo_ep = endpoint_from_address(&demo_svc.address);
+            let other_ep = endpoint_from_address(&other_svc.address);
             assert_ne!(demo_ep, other_ep, "projects must not share host endpoints");
         }
         other => panic!("expected Status, got {other:?}"),
@@ -449,19 +449,24 @@ async fn preferred_ports_private_and_proxy_status() {
         Response::Status { projects } => {
             let demo = &projects[0];
             assert!(
-                demo.routes.iter().any(|r| {
-                    r.starts_with("demo_redis → 127.53.") && r.ends_with(":45901")
+                demo.services.iter().any(|s| {
+                    s.name == "redis"
+                        && s.host == "demo_redis"
+                        && s.address.starts_with("127.53.")
+                        && s.address.ends_with(":45901")
                 }),
-                "private redis label missing: {:?}",
-                demo.routes
+                "private redis missing: {:?}",
+                demo.services
             );
             assert!(
-                demo.routes.iter().any(|r| {
-                    r.starts_with("http://api.demo.localhost:2015/ → 127.53.")
-                        && r.contains(":45911")
+                demo.services.iter().any(|s| {
+                    s.name == "api"
+                        && s.host == "http://api.demo.localhost:2015/"
+                        && s.address.starts_with("127.53.")
+                        && s.address.contains(":45911")
                 }),
-                "proxied api label missing: {:?}",
-                demo.routes
+                "proxied api missing: {:?}",
+                demo.services
             );
         }
         other => panic!("expected Status, got {other:?}"),
@@ -530,12 +535,12 @@ async fn two_projects_same_preferred_get_distinct_ports() {
         Response::Status { projects } => {
             let endpoint = |name: &str| -> (String, u16) {
                 let p = projects.iter().find(|p| p.name == name).unwrap();
-                let label = p
-                    .routes
+                let svc = p
+                    .services
                     .iter()
-                    .find(|r| r.starts_with(&format!("{name}_redis → 127.53.")))
+                    .find(|s| s.name == "redis" && s.host == format!("{name}_redis"))
                     .unwrap();
-                endpoint_from_label(label)
+                endpoint_from_address(&svc.address)
             };
             let a = endpoint("demo");
             let b = endpoint("other");
@@ -603,12 +608,12 @@ async fn concurrent_up_same_preferred_no_collision() {
             let endpoints: Vec<(String, u16)> = projects
                 .iter()
                 .map(|p| {
-                    let label = p
-                        .routes
+                    let svc = p
+                        .services
                         .iter()
-                        .find(|r| r.starts_with(&format!("{}_redis → 127.53.", p.name)))
+                        .find(|s| s.name == "redis" && s.host == format!("{}_redis", p.name))
                         .unwrap();
-                    endpoint_from_label(label)
+                    endpoint_from_address(&svc.address)
                 })
                 .collect();
             assert_ne!(endpoints[0].0, endpoints[1].0);
@@ -752,12 +757,12 @@ time.sleep(3600)
         Response::Status { projects } => {
             let label_ep = |name: &str| -> (String, u16) {
                 let p = projects.iter().find(|p| p.name == name).unwrap();
-                let label = p
-                    .routes
+                let svc = p
+                    .services
                     .iter()
-                    .find(|r| r.starts_with(&format!("{name}_redis → 127.53.")))
+                    .find(|s| s.name == "redis" && s.host == format!("{name}_redis"))
                     .unwrap();
-                endpoint_from_label(label)
+                endpoint_from_address(&svc.address)
             };
             let e1 = label_ep("redis-project-1");
             let e2 = label_ep("redis-project-2");

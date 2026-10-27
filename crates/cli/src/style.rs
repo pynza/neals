@@ -21,12 +21,7 @@ pub fn new_table() -> Table {
 }
 
 pub fn header_cell(text: &str) -> Cell {
-    let cell = Cell::new(text);
-    if use_color() {
-        cell.add_attribute(Attribute::Bold).fg(TableColor::Cyan)
-    } else {
-        cell
-    }
+    Cell::new(text).add_attribute(Attribute::Bold)
 }
 
 pub fn status_ok(text: &str) -> Cell {

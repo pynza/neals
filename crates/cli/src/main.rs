@@ -8,7 +8,9 @@ mod shell;
 mod style;
 
 use anyhow::{bail, Context, Result};
-use clap::{builder::styling, ColorChoice, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{
+    builder::styling, ArgAction, ColorChoice, CommandFactory, Parser, Subcommand, ValueEnum,
+};
 use clap_complete::{
     engine::{ArgValueCompleter, CompletionCandidate},
     CompleteEnv,
@@ -48,6 +50,7 @@ Keys while following logs (neals up / logs -f):
 #[command(
     name = "neals",
     version,
+    disable_version_flag = true,
     about = "Manage devenv projects in isolated network namespaces",
     long_about = LONG_ABOUT,
     after_long_help = AFTER_LONG_HELP,
@@ -55,6 +58,15 @@ Keys while following logs (neals up / logs -f):
     styles = clap_styles()
 )]
 struct Cli {
+    #[arg(
+        short = 'v',
+        short_alias = 'V',
+        long = "version",
+        action = ArgAction::Version,
+        help = "Print version"
+    )]
+    _version: (),
+
     #[arg(short = 'y', long = "yes", global = true, help = "Assume yes for confirmations")]
     yes: bool,
 
@@ -144,7 +156,7 @@ confirmation (use -y/--yes to skip). Does not remove source, devenv.lock,\n\
         hard: bool,
     },
 
-    #[command(about = "Show running projects and service ports")]
+    #[command(about = "Show running projects, DNS names, and listen addresses")]
     Status,
 
     #[command(
@@ -567,8 +579,8 @@ pub(crate) fn cmd_up(project: &str, detach: bool) -> Result<ExitCode> {
             style::print_ok(&format!("started `{project}`"));
             if let Ok(Response::Status { projects }) = with_daemon(Request::Status) {
                 if let Some(p) = projects.iter().find(|p| p.name == project) {
-                    for route in &p.routes {
-                        println!("  → {}", style::accent(route));
+                    for svc in &p.services {
+                        println!("  → {}", style::accent(&svc.summary()));
                     }
                 }
             }
@@ -615,32 +627,126 @@ pub(crate) fn cmd_status() -> Result<()> {
                 style::print_dim("no projects running");
                 return Ok(());
             }
-            let mut table = style::new_table();
-            table.set_header(vec![
-                style::header_cell("Name"),
-                style::header_cell("PID"),
-                style::header_cell("Uptime"),
-                style::header_cell("Services"),
-            ]);
-            for project in projects {
-                let routes = if project.routes.is_empty() {
-                    "-".into()
-                } else {
-                    project.routes.join("\n")
-                };
-                table.add_row(vec![
-                    Cell::new(&project.name),
-                    Cell::new(project.pid.to_string()),
-                    Cell::new(format_uptime(project.uptime_secs)),
-                    Cell::new(routes),
-                ]);
+            for (i, project) in projects.iter().enumerate() {
+                if i > 0 {
+                    println!();
+                }
+                println!("{}", format_project_status(project));
             }
-            println!("{table}");
             Ok(())
         }
         Response::Error { message } => bail!("{message}"),
         other => bail!("unexpected response from nealsd: {other:?}"),
     }
+}
+
+fn format_project_status(project: &neals_common::ProjectRuntime) -> String {
+    let body = if project.services.is_empty() {
+        empty_services_table()
+    } else {
+        status_services_table(&project.services)
+    };
+    with_titled_top_border(
+        &body,
+        &project.name,
+        project.pid,
+        &format_uptime(project.uptime_secs),
+    )
+}
+
+fn status_services_table(services: &[neals_common::ServiceRuntime]) -> String {
+    let mut table = style::new_table();
+    table.set_header(vec![
+        style::header_cell("Service"),
+        style::header_cell("Host"),
+        style::header_cell("Address"),
+    ]);
+    for svc in services {
+        let address = if svc.address.is_empty() {
+            "-"
+        } else {
+            svc.address.as_str()
+        };
+        table.add_row(vec![
+            Cell::new(&svc.name),
+            Cell::new(&svc.host),
+            Cell::new(address),
+        ]);
+    }
+    table.to_string()
+}
+
+fn empty_services_table() -> String {
+    let mut table = style::new_table();
+    table.set_header(vec![
+        style::header_cell("Service"),
+        style::header_cell("Host"),
+        style::header_cell("Address"),
+    ]);
+    table.add_row(vec![Cell::new("-"), Cell::new("-"), Cell::new("-")]);
+    table.to_string()
+}
+
+fn with_titled_top_border(table: &str, name: &str, pid: u32, uptime: &str) -> String {
+    let mut lines = table.lines();
+    let Some(top) = lines.next() else {
+        let fallback = format!(" {name} · pid {pid} · up {uptime} ");
+        return titled_border_line(name, pid, uptime, fallback.chars().count() + 4);
+    };
+    let width = visible_width(top);
+    let mut out = titled_border_line(name, pid, uptime, width);
+    out.push('\n');
+    for (i, line) in lines.enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+fn titled_border_line(name: &str, pid: u32, uptime: &str, width: usize) -> String {
+    let plain = format!(" {name} · pid {pid} · up {uptime} ");
+    let inner = width.saturating_sub(2);
+    let plain = if plain.chars().count() > inner {
+        plain.chars().take(inner.saturating_sub(1)).collect::<String>() + "…"
+    } else {
+        plain
+    };
+    let fill = inner.saturating_sub(plain.chars().count());
+    let label = format!(
+        " {} · pid {pid} · up {uptime} ",
+        style::accent(name)
+    );
+    let label = if plain.ends_with('…') {
+        plain
+    } else {
+        label
+    };
+    let mut line = String::from("┌");
+    line.push_str(&label);
+    line.extend(std::iter::repeat('─').take(fill));
+    line.push('┐');
+    line
+}
+
+fn visible_width(s: &str) -> usize {
+    let mut width = 0;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.next() == Some('[') {
+                for c in chars.by_ref() {
+                    if ('\x40'..='\x7e').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        width += 1;
+    }
+    width
 }
 
 fn format_uptime(secs: u64) -> String {
@@ -677,12 +783,57 @@ fn project_path(name: &str) -> Result<std::path::PathBuf> {
 
 #[cfg(test)]
 mod format_tests {
-    use super::format_uptime;
+    use super::{format_project_status, format_uptime, titled_border_line, visible_width};
+    use neals_common::{ProjectRuntime, ServiceRuntime};
 
     #[test]
     fn format_uptime_examples() {
         assert_eq!(format_uptime(45), "45s");
         assert_eq!(format_uptime(125), "2m 5s");
         assert_eq!(format_uptime(3661), "1h 1m");
+    }
+
+    #[test]
+    fn titled_border_pads_to_visible_width() {
+        let line = titled_border_line("demo", 1, "1s", 40);
+        assert!(line.starts_with('┌'));
+        assert!(line.contains("demo"));
+        assert!(line.contains("pid 1"));
+        assert!(line.contains("up 1s"));
+        assert!(line.ends_with('┐'));
+        assert_eq!(visible_width(&line), 40);
+    }
+
+    #[test]
+    fn format_project_status_keeps_name_inside_box() {
+        let text = format_project_status(&ProjectRuntime {
+            name: "demo".into(),
+            pid: 1234,
+            netns_pid: 0,
+            uptime_secs: 125,
+            services: vec![
+                ServiceRuntime {
+                    name: "db".into(),
+                    host: "demo_db".into(),
+                    address: "127.53.0.1:3306".into(),
+                },
+                ServiceRuntime {
+                    name: "mailpit".into(),
+                    host: "http://mailpit.demo.localhost/".into(),
+                    address: String::new(),
+                },
+            ],
+        });
+        let first = text.lines().next().unwrap();
+        assert!(first.starts_with('┌'));
+        assert!(first.contains("demo"));
+        assert!(first.contains("pid 1234"));
+        assert!(first.contains("up 2m 5s"));
+        assert!(first.ends_with('┐'));
+        assert!(text.contains("Service"));
+        assert!(text.contains("demo_db"));
+        assert!(text.contains("127.53.0.1:3306"));
+        assert!(text.contains("mailpit"));
+        assert!(text.lines().last().unwrap().starts_with('└'));
     }
 }

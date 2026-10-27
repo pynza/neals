@@ -2,7 +2,7 @@ use crate::caddy::CaddyManager;
 use crate::hosts;
 use crate::netns::SlirpHandle;
 use crate::ports::LoopbackLeases;
-use neals_common::{service_host_name, ProjectRuntime};
+use neals_common::{service_host_name, ProjectRuntime, ServiceRuntime};
 use nix::errno::Errno;
 use nix::sys::signal::{kill, killpg, Signal};
 use nix::unistd::Pid;
@@ -12,6 +12,22 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tokio::process::Child;
 use tokio::time::{timeout, Duration};
+
+fn http_url(host: &str, proxy_port: u16) -> String {
+    if proxy_port == 80 {
+        format!("http://{host}/")
+    } else {
+        format!("http://{host}:{proxy_port}/")
+    }
+}
+
+fn tcp_address(host_ip: Ipv4Addr, host_port: u16, guest_port: u16) -> String {
+    if host_port == guest_port {
+        format!("{host_ip}:{host_port}")
+    } else {
+        format!("{host_ip}:{host_port} (guest :{guest_port})")
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoundTarget {
@@ -39,45 +55,31 @@ impl BoundRoute {
         service_host_name(project, &self.service)
     }
 
-    pub fn status_label(&self, project: &str, proxy_port: u16) -> String {
+    pub fn to_runtime(&self, project: &str, proxy_port: u16) -> ServiceRuntime {
         match &self.target {
-            BoundTarget::Unix { .. } => {
-                let host = self.public_host(project);
-                if proxy_port == 80 {
-                    format!("http://{host}/")
-                } else {
-                    format!("http://{host}:{proxy_port}/")
-                }
-            }
+            BoundTarget::Unix { .. } => ServiceRuntime {
+                name: self.service.clone(),
+                host: http_url(&self.public_host(project), proxy_port),
+                address: String::new(),
+            },
             BoundTarget::Tcp {
                 host_ip,
                 host_port,
                 guest_port,
-            } if self.proxy => {
-                let host = self.public_host(project);
-                let url = if proxy_port == 80 {
-                    format!("http://{host}/")
-                } else {
-                    format!("http://{host}:{proxy_port}/")
-                };
-                if host_port == guest_port {
-                    format!("{url} → {host_ip}:{host_port}")
-                } else {
-                    format!("{url} → {host_ip}:{host_port} (guest :{guest_port})")
-                }
-            }
+            } if self.proxy => ServiceRuntime {
+                name: self.service.clone(),
+                host: http_url(&self.public_host(project), proxy_port),
+                address: tcp_address(*host_ip, *host_port, *guest_port),
+            },
             BoundTarget::Tcp {
                 host_ip,
                 host_port,
                 guest_port,
-            } => {
-                let name = self.dns_name(project);
-                if host_port == guest_port {
-                    format!("{name} → {host_ip}:{host_port}")
-                } else {
-                    format!("{name} → {host_ip}:{host_port} (guest :{guest_port})")
-                }
-            }
+            } => ServiceRuntime {
+                name: self.service.clone(),
+                host: self.dns_name(project),
+                address: tcp_address(*host_ip, *host_port, *guest_port),
+            },
         }
     }
 
@@ -148,10 +150,10 @@ impl AppState {
                 pid: p.pid,
                 netns_pid: p.netns_pid,
                 uptime_secs: p.started_at.elapsed().as_secs(),
-                routes: p
+                services: p
                     .bound
                     .iter()
-                    .map(|r| r.status_label(&p.name, proxy_port))
+                    .map(|r| r.to_runtime(&p.name, proxy_port))
                     .collect(),
             })
             .collect()
