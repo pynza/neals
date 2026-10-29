@@ -153,13 +153,15 @@ async fn ping_up_status_down() {
             assert_eq!(projects[0].services.len(), 2);
             assert!(projects[0].services.iter().any(|s| {
                 s.name == "backend"
-                    && s.host == "http://backend.demo.localhost:2015/"
+                    && s.host == "demo_backend"
                     && s.address.is_empty()
+                    && s.url == "http://backend.demo.localhost:2015/"
             }));
             assert!(projects[0].services.iter().any(|s| {
                 s.name == "api"
-                    && s.host == "http://api.demo.localhost:2015/"
+                    && s.host == "demo_api"
                     && s.address.starts_with("127.53.")
+                    && s.url == "http://api.demo.localhost:2015/"
             }));
         }
         other => panic!("expected Status, got {other:?}"),
@@ -454,6 +456,7 @@ async fn preferred_ports_private_and_proxy_status() {
                         && s.host == "demo_redis"
                         && s.address.starts_with("127.53.")
                         && s.address.ends_with(":45901")
+                        && s.url.is_empty()
                 }),
                 "private redis missing: {:?}",
                 demo.services
@@ -461,9 +464,10 @@ async fn preferred_ports_private_and_proxy_status() {
             assert!(
                 demo.services.iter().any(|s| {
                     s.name == "api"
-                        && s.host == "http://api.demo.localhost:2015/"
+                        && s.host == "demo_api"
                         && s.address.starts_with("127.53.")
                         && s.address.contains(":45911")
+                        && s.url == "http://api.demo.localhost:2015/"
                 }),
                 "proxied api missing: {:?}",
                 demo.services

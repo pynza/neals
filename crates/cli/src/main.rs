@@ -156,7 +156,7 @@ confirmation (use -y/--yes to skip). Does not remove source, devenv.lock,\n\
         hard: bool,
     },
 
-    #[command(about = "Show running projects, DNS names, and listen addresses")]
+    #[command(about = "Show running projects, DNS names, addresses, and URLs")]
     Status,
 
     #[command(
@@ -654,23 +654,24 @@ fn format_project_status(project: &neals_common::ProjectRuntime) -> String {
     )
 }
 
+fn status_cell(value: &str) -> Cell {
+    Cell::new(if value.is_empty() { "none" } else { value })
+}
+
 fn status_services_table(services: &[neals_common::ServiceRuntime]) -> String {
     let mut table = style::new_table();
     table.set_header(vec![
         style::header_cell("Service"),
         style::header_cell("Host"),
         style::header_cell("Address"),
+        style::header_cell("Url"),
     ]);
     for svc in services {
-        let address = if svc.address.is_empty() {
-            "-"
-        } else {
-            svc.address.as_str()
-        };
         table.add_row(vec![
             Cell::new(&svc.name),
-            Cell::new(&svc.host),
-            Cell::new(address),
+            status_cell(&svc.host),
+            status_cell(&svc.address),
+            status_cell(&svc.url),
         ]);
     }
     table.to_string()
@@ -682,8 +683,14 @@ fn empty_services_table() -> String {
         style::header_cell("Service"),
         style::header_cell("Host"),
         style::header_cell("Address"),
+        style::header_cell("Url"),
     ]);
-    table.add_row(vec![Cell::new("-"), Cell::new("-"), Cell::new("-")]);
+    table.add_row(vec![
+        Cell::new("none"),
+        Cell::new("none"),
+        Cell::new("none"),
+        Cell::new("none"),
+    ]);
     table.to_string()
 }
 
@@ -816,11 +823,13 @@ mod format_tests {
                     name: "db".into(),
                     host: "demo_db".into(),
                     address: "127.53.0.1:3306".into(),
+                    url: String::new(),
                 },
                 ServiceRuntime {
                     name: "mailpit".into(),
-                    host: "http://mailpit.demo.localhost/".into(),
-                    address: String::new(),
+                    host: "demo_mailpit".into(),
+                    address: "127.53.0.2:8025".into(),
+                    url: "http://mailpit.demo.localhost/".into(),
                 },
             ],
         });
@@ -831,9 +840,13 @@ mod format_tests {
         assert!(first.contains("up 2m 5s"));
         assert!(first.ends_with('┐'));
         assert!(text.contains("Service"));
+        assert!(text.contains("Host"));
+        assert!(text.contains("Url"));
         assert!(text.contains("demo_db"));
+        assert!(text.contains("demo_mailpit"));
         assert!(text.contains("127.53.0.1:3306"));
-        assert!(text.contains("mailpit"));
+        assert!(text.contains("http://mailpit.demo.localhost/"));
+        assert!(text.contains("none"));
         assert!(text.lines().last().unwrap().starts_with('└'));
     }
 }

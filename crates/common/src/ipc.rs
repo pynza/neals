@@ -34,14 +34,22 @@ pub struct ServiceRuntime {
     pub host: String,
     #[serde(default)]
     pub address: String,
+    #[serde(default)]
+    pub url: String,
 }
 
 impl ServiceRuntime {
     pub fn summary(&self) -> String {
-        if self.address.is_empty() {
-            self.host.clone()
-        } else {
+        if !self.url.is_empty() {
+            if self.address.is_empty() {
+                format!("{} ({})", self.url, self.host)
+            } else {
+                format!("{} → {}", self.url, self.address)
+            }
+        } else if !self.address.is_empty() {
             format!("{} → {}", self.host, self.address)
+        } else {
+            self.host.clone()
         }
     }
 }
@@ -129,8 +137,9 @@ mod tests {
                     uptime_secs: 120,
                     services: vec![ServiceRuntime {
                         name: "backend".into(),
-                        host: "http://backend.demo.localhost/".into(),
+                        host: "demo_backend".into(),
                         address: String::new(),
+                        url: "http://backend.demo.localhost/".into(),
                     }],
                 }],
             },

@@ -56,11 +56,13 @@ impl BoundRoute {
     }
 
     pub fn to_runtime(&self, project: &str, proxy_port: u16) -> ServiceRuntime {
+        let host = self.dns_name(project);
         match &self.target {
             BoundTarget::Unix { .. } => ServiceRuntime {
                 name: self.service.clone(),
-                host: http_url(&self.public_host(project), proxy_port),
+                host,
                 address: String::new(),
+                url: http_url(&self.public_host(project), proxy_port),
             },
             BoundTarget::Tcp {
                 host_ip,
@@ -68,8 +70,9 @@ impl BoundRoute {
                 guest_port,
             } if self.proxy => ServiceRuntime {
                 name: self.service.clone(),
-                host: http_url(&self.public_host(project), proxy_port),
+                host,
                 address: tcp_address(*host_ip, *host_port, *guest_port),
+                url: http_url(&self.public_host(project), proxy_port),
             },
             BoundTarget::Tcp {
                 host_ip,
@@ -77,8 +80,9 @@ impl BoundRoute {
                 guest_port,
             } => ServiceRuntime {
                 name: self.service.clone(),
-                host: self.dns_name(project),
+                host,
                 address: tcp_address(*host_ip, *host_port, *guest_port),
+                url: String::new(),
             },
         }
     }
