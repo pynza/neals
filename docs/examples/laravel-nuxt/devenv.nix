@@ -19,37 +19,7 @@
   };
 
   languages.php.enable = true;
-  languages.php.extensions = [
-    "ctype"
-    "curl"
-    "fileinfo"
-    "filter"
-    "gd"
-    "iconv"
-    "intl"
-    "mbstring"
-    "mysqli"
-    "openssl"
-    "pdo_mysql"
-    "session"
-    "tokenizer"
-    "zip"
-    # "xdebug"
-  ];
-
-  # Guest → host loopback (IDE debuggers, etc.):
-  # Neals disables host loopback by default. For Xdebug (or any tool that must
-  # reach a listener on the host's 127.0.0.1), set on nealsd:
-  #   Environment=NEALS_ALLOW_HOST_LOOPBACK=1
-  # then restart nealsd and recreate the project (`neals down` / `neals up`).
-  # Point the client at 10.0.2.2 (slirp gateway), not 127.0.0.1.
-  # See docs/services.md → "Guest → host loopback".
-  # languages.php.ini = ''
-  #   xdebug.mode=debug
-  #   xdebug.client_host=10.0.2.2
-  #   xdebug.client_port=9003
-  # '';
-
+  # Guest → host loopback (Xdebug / IDE debuggers): see docs/services.md
   languages.javascript.enable = true;
 
   services.mysql = {
