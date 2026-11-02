@@ -90,21 +90,21 @@ pub fn accent(msg: &str) -> String {
 }
 
 pub fn format_mark(ok: bool, required: bool) -> String {
-    if ok {
-        if use_color() {
-            "ok".green().to_string()
-        } else {
-            "ok".into()
-        }
+    let mark = if ok {
+        "ok  "
     } else if required {
-        if use_color() {
-            "FAIL".red().bold().to_string()
-        } else {
-            "FAIL".into()
-        }
-    } else if use_color() {
-        "WARN".yellow().to_string()
+        "FAIL"
     } else {
-        "WARN".into()
+        "WARN"
+    };
+    if !use_color() {
+        return mark.into();
+    }
+    if ok {
+        mark.green().to_string()
+    } else if required {
+        mark.red().bold().to_string()
+    } else {
+        mark.yellow().to_string()
     }
 }

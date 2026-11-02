@@ -78,13 +78,14 @@ pub fn run_doctor() -> Result<ExitCode> {
         check_daemon_ping(),
     ];
 
+    let name_w = checks.iter().map(|c| c.name.len()).max().unwrap_or(1);
     let mut failed = 0usize;
     for check in &checks {
         if !check.ok && check.required {
             failed += 1;
         }
         let mark = style::format_mark(check.ok, check.required);
-        println!("{mark:<18} {:<10} {}", check.name, check.detail);
+        println!("{mark}  {:name_w$}  {}", check.name, check.detail);
     }
 
     if failed == 0 {
