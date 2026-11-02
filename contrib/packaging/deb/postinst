@@ -122,6 +122,7 @@ configure|1|2)
     echo "neals: installed. Enable the portless daemon with:"
     echo "  sudo systemctl enable --now \"nealsd@\$USER\""
     echo "neals: bash completion: /usr/share/bash-completion/completions/neals"
+    echo "neals: guest→host loopback is off by default; see docs/services.md (NEALS_ALLOW_HOST_LOOPBACK)."
     exit 0
   fi
 

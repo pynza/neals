@@ -60,6 +60,40 @@ Public URL shape (proxy services only):
 `neals bash` / `neals exec` enter the project's user, net, and mount namespaces,
 so inside the shell the guest ports, short DNS names, and `/run` apply.
 
+## Guest → host loopback
+
+By default `slirp4netns` runs with `--disable-host-loopback`: processes inside
+a project **cannot** reach the host’s `127.0.0.1` via the slirp gateway
+(`10.0.2.2`). That keeps host-only listeners (local DBs, IDE debug ports,
+agents) unreachable from the guest.
+
+Neals itself does not need that path (traffic is host → guest via `127.53`
+and Caddy). Apps that must call **back** to something on the host loopback
+(IDE debuggers, local callbacks) need an opt-in on **nealsd**:
+
+```bash
+# system daemon
+sudo systemctl edit "nealsd@$USER"
+```
+
+```ini
+[Service]
+Environment=NEALS_ALLOW_HOST_LOOPBACK=1
+```
+
+```bash
+sudo systemctl restart "nealsd@$USER"
+# recreate project netns so slirp picks it up
+neals down <project> && neals up <project>
+```
+
+For an ad-hoc daemon, export `NEALS_ALLOW_HOST_LOOPBACK=1` before starting
+`nealsd`. Truthy values: `1`, `true`, `yes`, `on`.
+
+With the flag set, guests can use `10.0.2.2` as “the host” (same idea as
+Docker’s `host.docker.internal`). `neals doctor` reports whether the running
+daemon allows it.
+
 ## HTTP modes
 
 | Mode | How | Listen | Browser URL |

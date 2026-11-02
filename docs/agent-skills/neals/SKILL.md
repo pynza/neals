@@ -89,6 +89,8 @@ Global: `-y` / `--yes` skips confirmations.
 | `$XDG_RUNTIME_DIR/neals/` | Ad-hoc IPC + runtime |
 
 `NEALS_SOCKET`, `NEALS_CADDY_HTTP_ADDR` override IPC / Caddy listen.
+`NEALS_ALLOW_HOST_LOOPBACK=1` on **nealsd** lets guests reach host `127.0.0.1`
+via `10.0.2.2` (off by default; IDE debuggers).
 
 ## Agent guidance
 

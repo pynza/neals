@@ -2,9 +2,9 @@ use crate::daemon_client::find_nealsd;
 use crate::style;
 use anyhow::Result;
 use neals_common::{
-    call_daemon, config_dir, ensure_dir, runtime_dir, state_dir, state_hosts_path,
-    system_hosts_path, BEGIN_MARKER, Request, Response, SYSTEM_DAEMON_SOCKET,
-    SYSTEM_HOSTS_MIRROR,
+    allow_host_loopback, call_daemon, config_dir, ensure_dir, runtime_dir, state_dir,
+    state_hosts_path, system_hosts_path, BEGIN_MARKER, Request, Response, ALLOW_HOST_LOOPBACK_ENV,
+    SYSTEM_DAEMON_SOCKET, SYSTEM_HOSTS_MIRROR,
 };
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -74,6 +74,7 @@ pub fn run_doctor() -> Result<ExitCode> {
         check_dir_writable("runtime", runtime_dir()?),
         check_hosts_path_unit(),
         check_hosts_sync(),
+        check_host_loopback(),
         check_daemon_ping(),
     ];
 
@@ -303,6 +304,59 @@ fn check_daemon_ping() -> Check {
         }
         Err(_) => Check::info("daemon", "not running (auto-starts on `neals up`)"),
     }
+}
+
+fn check_host_loopback() -> Check {
+    if daemon_allows_host_loopback() {
+        Check::info(
+            "host-loopback",
+            format!("allowed; guest can reach host 127.0.0.1 via 10.0.2.2"),
+        )
+    } else {
+        Check::info(
+            "host-loopback",
+            format!(
+                "disabled (default); see docs/services.md"
+            ),
+        )
+    }
+}
+
+fn daemon_allows_host_loopback() -> bool {
+    if allow_host_loopback() {
+        return true;
+    }
+    let Ok(user) = std::env::var("USER") else {
+        return false;
+    };
+    if user.is_empty() {
+        return false;
+    }
+    let unit = format!("nealsd@{user}.service");
+    let Ok(output) = Command::new("systemctl")
+        .args(["show", "-p", "Environment", "--value", &unit])
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .any(|entry| {
+            let Some((key, value)) = entry.split_once('=') else {
+                return false;
+            };
+            key == ALLOW_HOST_LOOPBACK_ENV && env_flag_value(value)
+        })
+}
+
+fn env_flag_value(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn systemctl_unit_hint() -> String {

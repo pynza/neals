@@ -51,6 +51,17 @@ sudo systemctl edit "nealsd@$USER"
 Environment=PATH=%h/.nix-profile/bin:/usr/local/bin:/usr/bin:/bin
 ```
 
+Guest → host loopback (IDE debuggers, callbacks to host `127.0.0.1`) is
+**off** by default. To allow `10.0.2.2` from inside a project:
+
+```ini
+[Service]
+Environment=NEALS_ALLOW_HOST_LOOPBACK=1
+```
+
+Then `sudo systemctl restart "nealsd@$USER"` and recreate running projects.
+Details: [docs/services.md](../../docs/services.md).
+
 Logs: `journalctl -u "nealsd@$USER" -f` · hosts apply:
 `journalctl -u neals-hosts-sync.service -f`
 

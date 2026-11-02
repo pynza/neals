@@ -23,6 +23,22 @@ pub use ipc::{
 };
 pub use registry::{Project, Registry};
 
+pub const ALLOW_HOST_LOOPBACK_ENV: &str = "NEALS_ALLOW_HOST_LOOPBACK";
+
+pub fn env_flag(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
+}
+
+pub fn allow_host_loopback() -> bool {
+    env_flag(ALLOW_HOST_LOOPBACK_ENV)
+}
+
 pub fn shell_quote(s: &str) -> String {
     if s.is_empty() {
         return "''".into();
@@ -33,6 +49,26 @@ pub fn shell_quote(s: &str) -> String {
         return s.to_string();
     }
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod env_flag_tests {
+    use super::*;
+
+    #[test]
+    fn env_flag_truthy_values() {
+        let key = "NEALS_TEST_ENV_FLAG";
+        for v in ["1", "true", "YES", "on", " True "] {
+            std::env::set_var(key, v);
+            assert!(env_flag(key), "{v}");
+        }
+        for v in ["0", "false", "", "no"] {
+            std::env::set_var(key, v);
+            assert!(!env_flag(key), "{v}");
+        }
+        std::env::remove_var(key);
+        assert!(!env_flag(key));
+    }
 }
 
 pub use xdg::{

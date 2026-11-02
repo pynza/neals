@@ -201,14 +201,14 @@ impl SlirpHandle {
 }
 
 pub async fn start_slirp(netns_pid: u32) -> Result<SlirpHandle> {
-    let mut child = Command::new("slirp4netns")
-        .args([
-            "--configure",
-            "--mtu=65520",
-            "--disable-host-loopback",
-            &netns_pid.to_string(),
-            "tap0",
-        ])
+    let mut cmd = Command::new("slirp4netns");
+    cmd.arg("--configure").arg("--mtu=65520");
+    if !neals_common::allow_host_loopback() {
+        cmd.arg("--disable-host-loopback");
+    }
+    let mut child = cmd
+        .arg(netns_pid.to_string())
+        .arg("tap0")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
