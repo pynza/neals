@@ -371,8 +371,22 @@ pub fn print_process_logs(
     let mut attached: HashSet<PathBuf> = HashSet::new();
     let mut followers: Vec<LogFollower> = Vec::new();
     attach_new_process_streams(&out, &err, &mut attached, &mut followers)?;
+    let mut netns_pid: Option<u32> = None;
+    let mut ticks: u8 = 0;
+    let _ = crate::live::project_gone(project, &mut netns_pid);
 
     loop {
+        if let Some(pid) = netns_pid {
+            if !crate::live::netns_alive(pid) {
+                crate::style::print_dim(&format!("`{project}` is no longer running"));
+                return Ok(());
+            }
+        }
+        ticks = ticks.wrapping_add(1);
+        if ticks % 5 == 0 && crate::live::project_gone(project, &mut netns_pid) {
+            crate::style::print_dim(&format!("`{project}` is no longer running"));
+            return Ok(());
+        }
         attach_new_process_streams(&out, &err, &mut attached, &mut followers)?;
         let mut printed = false;
         for follower in followers.iter_mut() {
@@ -409,7 +423,18 @@ fn wait_for_process_logs(
     ));
 
     let mut ticks = 0usize;
+    let mut netns_pid: Option<u32> = None;
+    let _ = crate::live::project_gone(project, &mut netns_pid);
     loop {
+        if let Some(pid) = netns_pid {
+            if !crate::live::netns_alive(pid) {
+                bail!("`{project}` stopped before `{process}` process logs appeared");
+            }
+        }
+        ticks += 1;
+        if ticks % 5 == 0 && crate::live::project_gone(project, &mut netns_pid) {
+            bail!("`{project}` stopped before `{process}` process logs appeared");
+        }
         if out.is_file() || err.is_file() {
             crate::style::eprint_dim(&format!("`{process}` process logs ready"));
             return Ok(());
@@ -436,12 +461,8 @@ fn wait_for_process_logs(
             merged = Some(LogFollower::open_at_end(&merged_path)?);
         }
 
-        if !follow {
-            ticks += 1;
-            if ticks >= 150 {
-                // ~30s at 200ms
-                break;
-            }
+        if !follow && ticks >= 150 {
+            break;
         }
         thread::sleep(FOLLOW_POLL);
     }

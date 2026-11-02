@@ -6,7 +6,7 @@ use crate::style;
 use anyhow::{bail, Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-use neals_common::{Registry, Request, Response};
+use neals_common::{call_daemon, Registry, Request, Response};
 use std::collections::{HashSet, VecDeque};
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
@@ -82,10 +82,27 @@ fn resolve_project_path(project: &str) -> Result<std::path::PathBuf> {
     }
 }
 
-fn project_is_running(project: &str) -> Option<bool> {
-    match with_daemon(Request::Status) {
-        Ok(Response::Status { projects }) => Some(projects.iter().any(|p| p.name == project)),
-        _ => None,
+pub(crate) fn netns_alive(pid: u32) -> bool {
+    pid > 1 && Path::new(&format!("/proc/{pid}")).is_dir()
+}
+
+pub(crate) fn project_gone(project: &str, netns_pid: &mut Option<u32>) -> bool {
+    if let Some(pid) = *netns_pid {
+        if !netns_alive(pid) {
+            return true;
+        }
+    }
+    match call_daemon(&Request::Status) {
+        Ok(Response::Status { projects }) => match projects.iter().find(|p| p.name == project) {
+            Some(p) => {
+                if p.netns_pid > 1 {
+                    *netns_pid = Some(p.netns_pid);
+                }
+                false
+            }
+            None => true,
+        },
+        _ => false,
     }
 }
 
@@ -99,33 +116,34 @@ fn follow_loop(
     let mut mux: Option<ProcessLogMux> = None;
     let mut discover_ticks: u8 = 0;
     let mut dedup = CrossDeduper::new(CROSS_DEDUP_CAP);
+    let mut netns_pid: Option<u32> = None;
 
     let path = wait_for_log_file(project)?;
     let mut merged = Some(attach_devenv_merged(&path, from_start, merged_from, raw)?);
     let mut devenv_width = DEVENV_STREAM.len();
+    let _ = project_gone(project, &mut netns_pid);
 
     loop {
         if raw {
             if event::poll(TICK)? {
                 if let Event::Key(key) = event::read()? {
-                    if key.kind != KeyEventKind::Press {
-                        continue;
-                    }
-                    match (key.code, key.modifiers) {
-                        (KeyCode::Char('q'), KeyModifiers::CONTROL) => {
-                            return Ok(LiveOutcome::Detached);
+                    if key.kind == KeyEventKind::Press {
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Char('q'), KeyModifiers::CONTROL) => {
+                                return Ok(LiveOutcome::Detached);
+                            }
+                            (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
+                                return Ok(LiveOutcome::Shell);
+                            }
+                            (KeyCode::Char('c'), KeyModifiers::CONTROL)
+                            | (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
+                                let _ = with_daemon(Request::Down {
+                                    project: project.to_string(),
+                                });
+                                return Ok(LiveOutcome::Stopped);
+                            }
+                            _ => {}
                         }
-                        (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
-                            return Ok(LiveOutcome::Shell);
-                        }
-                        (KeyCode::Char('c'), KeyModifiers::CONTROL)
-                        | (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
-                            let _ = with_daemon(Request::Down {
-                                project: project.to_string(),
-                            });
-                            return Ok(LiveOutcome::Stopped);
-                        }
-                        _ => {}
                     }
                 }
             }
@@ -133,9 +151,15 @@ fn follow_loop(
             std::thread::sleep(TICK);
         }
 
+        if let Some(pid) = netns_pid {
+            if !netns_alive(pid) {
+                return Ok(LiveOutcome::Exited);
+            }
+        }
+
         discover_ticks = discover_ticks.wrapping_add(1);
         if discover_ticks % DISCOVER_EVERY == 0 {
-            if project_is_running(project) == Some(false) {
+            if project_gone(project, &mut netns_pid) {
                 return Ok(LiveOutcome::Exited);
             }
             if mux.is_none() {
@@ -289,6 +313,14 @@ fn emit_line(raw: bool, line: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn netns_alive_rejects_missing_and_low_pids() {
+        assert!(!netns_alive(0));
+        assert!(!netns_alive(1));
+        assert!(!netns_alive(4_294_967_293));
+        assert!(netns_alive(std::process::id()));
+    }
 
     #[test]
     fn cross_dedup_suppresses_echo_either_order() {
