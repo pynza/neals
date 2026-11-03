@@ -2,7 +2,7 @@
 
 Local platform orchestrator for [devenv](https://devenv.sh) projects.
 
-https://github.com/user-attachments/assets/6bed70a0-1ba7-4c77-afd1-c9acb5ebc896
+https://github.com/user-attachments/assets/f93dfff4-c790-49d3-97dc-eaf521f60ded
 
 Neals runs each project in its own network namespace, gives each TCP service a
 dedicated `127.53.x.y` host address (preferred ports without collisions),
