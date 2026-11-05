@@ -2,14 +2,28 @@
 
 ## Requirements
 
-- Linux with systemd
-- [`bubblewrap`](https://github.com/containers/bubblewrap) (`bwrap`) and
-  [`slirp4netns`](https://github.com/rootless-containers/slirp4netns)
-  (deb/rpm pull these in via Depends); unprivileged user namespaces enabled
-  on the host
-- [`nix`](https://nixos.org) and [`devenv`](https://devenv.sh) for projects
-- [`caddy`](https://caddyserver.com) on PATH (or under `~/.nix-profile/bin`)
+**Depends** (deb/rpm pull these in; otherwise install from the distro):
+
+- Linux with systemd; unprivileged user namespaces enabled
+- [`bubblewrap`](https://github.com/containers/bubblewrap) (`bwrap`)
+- [`slirp4netns`](https://github.com/rootless-containers/slirp4netns)
+
+**Needs on PATH** (not shipped by the package):
+
+- [`nix`](https://nixos.org) and [`devenv`](https://devenv.sh) ≥ 2 (projects)
+- [`caddy`](https://caddyserver.com) (or under `~/.nix-profile/bin`)
 - For system (portless) mode: `127.0.0.1:80` free
+
+**Tested with** (development baseline; nearby versions are usually fine —
+check with `neals doctor` if something breaks):
+
+| Package | Version |
+|---------|---------|
+| devenv | 2.3.0 |
+| caddy | 2.11.4 |
+| bubblewrap | 0.9.0 |
+| slirp4netns | 1.2.1 |
+| nix | 2.35.1 |
 
 ## Plug and play (deb / rpm)
 

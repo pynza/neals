@@ -7,10 +7,23 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    devenv.url = "github:cachix/devenv/v2.3";
+  };
+
+  nixConfig = {
+    extra-substituters = [ "https://devenv.cachix.org" ];
+    extra-trusted-public-keys = [
+      "devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw="
+    ];
   };
 
   outputs =
-    { self, nixpkgs, rust-overlay }:
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
+      devenv,
+    }:
     let
       systems = [
         "x86_64-linux"
@@ -41,6 +54,12 @@
             packages = [
               rust
               pkgs.git
+              pkgs.caddy
+              devenv.packages.${system}.default
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+              pkgs.bubblewrap
+              pkgs.slirp4netns
             ];
           };
         }

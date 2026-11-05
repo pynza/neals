@@ -14,7 +14,8 @@ and a project shell in the same namespace.
 ## Install
 
 Linux + systemd. Needs `bwrap`, `slirp4netns`, [nix](https://nixos.org),
-[devenv](https://devenv.sh), and [caddy](https://caddyserver.com) on `PATH`.
+[devenv](https://devenv.sh) ≥ 2, and [caddy](https://caddyserver.com) on
+`PATH`. Tested-with versions: [docs/install.md](docs/install.md#requirements).
 
 From [GitHub Releases](https://github.com/pynza/neals/releases):
 

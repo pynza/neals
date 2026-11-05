@@ -7,6 +7,11 @@ cargo build -p neals -p nealsd
 cargo run -p neals -- --help
 ```
 
+`nix develop` puts the Rust toolchain plus `devenv`, `caddy`, and (on Linux)
+`bwrap` / `slirp4netns` on `PATH`. The flake pins **devenv** to the version in
+[Install → Tested with](install.md#requirements); other tools come from the
+locked nixpkgs and may differ slightly from that table.
+
 Ad-hoc CLI use (no systemd): see [Install → Development](install.md#development-ad-hoc).
 
 ## Releases
