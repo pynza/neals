@@ -87,7 +87,7 @@ ensure_nfpm() {
 if [[ "${1:-}" != "" ]]; then
   VERSION="${1#v}"
 else
-  VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/cli/Cargo.toml | head -1)"
+  VERSION="$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version = "\([^"]*\)"/\1/p;}' Cargo.toml | head -1)"
 fi
 if [[ -z "$VERSION" ]]; then
   echo "error: could not determine version" >&2

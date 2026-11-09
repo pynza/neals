@@ -1,3 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/common", "crates/cli", "crates/daemon"]
+
+[workspace.package]
+version = "0.6.0"
+edition = "2021"

@@ -58,8 +58,9 @@ cat >"$PROJ/devenv.nix" <<'EOF'
 }
 EOF
 
-echo "==> version"
-neals -V | grep -q '0.6.0'
+WANT_VER="$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version = "\([^"]*\)"/\1/p;}' Cargo.toml | head -1)"
+echo "==> version ($WANT_VER)"
+neals -V | grep -Fq "$WANT_VER"
 
 echo "==> register"
 ( cd "$PROJ" && neals register )
@@ -125,4 +126,4 @@ ps=d["Status"]["projects"]
 assert not any(p["name"]=="smoke" for p in ps), ps
 ' "$STATUS"
 
-echo "ok: up / nsenter(+exec) / down @ 0.6.0"
+echo "ok: up / nsenter(+exec) / down @ $WANT_VER"

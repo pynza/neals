@@ -4,7 +4,7 @@
 #
 # Usage:
 #   ./contrib/packaging/install-local.sh [VERSION]
-# VERSION defaults to crates/cli/Cargo.toml.
+# VERSION defaults to [workspace.package] in Cargo.toml.
 #
 # Needs: cargo, dpkg-deb, sudo; apt-get recommended (resolves Depends).
 # Postinst prompts like the packaged install. Overrides:
@@ -40,7 +40,7 @@ DEB_ONLY=1 "$ROOT/contrib/packaging/package-linux.sh" "$@"
 if [[ -n "${1:-}" ]]; then
   VERSION="${1#v}"
 else
-  VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/cli/Cargo.toml | head -1)"
+  VERSION="$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version = "\([^"]*\)"/\1/p;}' Cargo.toml | head -1)"
 fi
 DEB="$ROOT/dist/neals_${VERSION}_${ARCH_DEB}.deb"
 if [[ ! -f "$DEB" ]]; then
