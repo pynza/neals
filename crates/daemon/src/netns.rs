@@ -225,21 +225,21 @@ pub fn find_nealsd_exe() -> Result<PathBuf> {
         }
     }
     if let Ok(exe) = std::env::current_exe() {
-        if exe.file_name().and_then(|n| n.to_str()) == Some("nealsd") {
-            return Ok(exe);
-        }
-        let sibling = exe.with_file_name("nealsd");
-        if sibling.is_file() {
-            return Ok(sibling);
-        }
-        if let Some(parent) = exe.parent().and_then(|p| p.parent()) {
-            let target_nealsd = parent.join("nealsd");
-            if target_nealsd.is_file() {
-                return Ok(target_nealsd);
-            }
+        if let Some(found) = nealsd_near(&exe) {
+            return Ok(found);
         }
     }
     which("nealsd").context("failed to locate the nealsd binary")
+}
+
+fn nealsd_near(exe: &Path) -> Option<PathBuf> {
+    if exe.file_name().and_then(|n| n.to_str()) == Some("nealsd") {
+        return Some(exe.to_path_buf());
+    }
+    exe.ancestors()
+        .take(8)
+        .map(|dir| dir.join("nealsd"))
+        .find(|candidate| candidate.is_file())
 }
 
 pub fn start_proxies(bound: &[BoundRoute], netns_pid: u32) -> Result<Vec<Child>> {
@@ -380,6 +380,24 @@ pub fn userns_works() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nealsd_near_finds_binary_from_cargo_test_layouts() {
+        let root = std::env::temp_dir().join(format!("nealsd-near-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let bin = root.join("debug/nealsd");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, b"").unwrap();
+
+        let deps = root.join("debug/deps/ipc_flow-deadbeef");
+        assert_eq!(nealsd_near(&deps).as_deref(), Some(bin.as_path()));
+
+        let nested = root.join("debug/build/nealsd/cafef00d/out/ipc_flow-cafef00d");
+        assert_eq!(nealsd_near(&nested).as_deref(), Some(bin.as_path()));
+
+        assert_eq!(nealsd_near(&bin).as_deref(), Some(bin.as_path()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn resolv_conf_is_bound_after_the_run_tmpfs() {
