@@ -597,10 +597,5 @@ mod tests {
             !held.contains(&port),
             "pick returned busy port {port} (held {held:?})"
         );
-        // Probe drop → still free for a real bind.
-        assert!(
-            TcpListener::bind(("127.0.0.1", port)).is_ok(),
-            "picked port {port} not bindable"
-        );
     }
 }

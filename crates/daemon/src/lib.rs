@@ -163,9 +163,12 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
     use neals_common::{decode_response, PROTOCOL_VERSION};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn temp_socket(tag: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("nealsd-{tag}-{}.sock", std::process::id()))
+        static N: AtomicU64 = AtomicU64::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("nealsd-{tag}-{}-{n}.sock", std::process::id()))
     }
 
     async fn exchange(request: &str) -> Response {
@@ -189,12 +192,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_socket_is_refused_and_stale_socket_is_replaced() {
-        let path = temp_socket("stale");
+    async fn live_socket_is_refused() {
+        let path = temp_socket("live");
         let live = bind_socket(&path).await.unwrap();
-        assert!(bind_socket(&path).await.is_err());
+        let err = bind_socket(&path).await.expect_err("second bind must fail");
+        assert!(err.to_string().contains("already running"), "{err:#}");
         drop(live);
-        bind_socket(&path).await.unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn stale_socket_file_is_replaced() {
+        let path = temp_socket("stale");
+        // Orphan a socket path the way a killed daemon would: close the fd, leave the file.
+        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        assert!(path.exists());
+        let _listener = bind_socket(&path).await.unwrap();
         let _ = std::fs::remove_file(&path);
     }
 
