@@ -133,16 +133,23 @@ Use -d/--detach to skip following logs."
         detach: bool,
     },
 
-    #[command(about = "Stop a running project, or every running project with --all")]
+    #[command(
+        about = "Stop a running project, or every running project with --all",
+        override_usage = "neals down [OPTIONS] [PROJECT]\n       neals down --all",
+        group(
+            clap::ArgGroup::new("target")
+                .required(true)
+                .args(["project", "all"])
+        )
+    )]
     Down {
         #[arg(
             help = "Project name",
             add = ArgValueCompleter::new(complete_projects),
-            required_unless_present = "all",
-            conflicts_with = "all"
+            group = "target"
         )]
         project: Option<String>,
-        #[arg(long, help = "Stop every running project")]
+        #[arg(long, help = "Stop every running project", group = "target")]
         all: bool,
     },
 
@@ -917,8 +924,13 @@ mod command_tests {
     fn down_takes_a_project_or_all_but_not_both_or_neither() {
         assert!(parse(&["down", "demo"]).is_ok());
         assert!(parse(&["down", "--all"]).is_ok());
-        assert!(parse(&["down"]).is_err());
         assert!(parse(&["down", "demo", "--all"]).is_err());
+
+        let err = match parse(&["down"]) {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("expected an error"),
+        };
+        assert!(err.contains("--all") && !err.contains("<PROJECT>"), "{err}");
     }
 
     #[test]
