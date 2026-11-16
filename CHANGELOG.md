@@ -6,6 +6,10 @@ any incompatible change between `neals` and `nealsd`.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-16
+
+First stable release.
+
 ### Added
 
 - `neals restart <project> [-d]`: stop if running, then start like `up`.
@@ -17,8 +21,9 @@ any incompatible change between `neals` and `nealsd`.
 
 ### Changed
 
-- **Upgrade step:** restart `nealsd` after upgrading from 0.x (the `Pong` reply
-  changed shape). See [docs/install.md](docs/install.md#upgrading).
+- **Upgrade from ≤0.6.1:** restart `nealsd` after installing (the `Pong` reply
+  changed shape). From 0.6.2 the protocol is already compatible.
+  See [docs/install.md](docs/install.md#upgrading).
 - **`$XDG_RUNTIME_DIR` is required.** The shared `/tmp/neals` fallback is gone.
 - The IPC socket is created with mode `0600`.
 - `nealsd` answers an undecodable request with an error instead of dropping
@@ -32,6 +37,9 @@ any incompatible change between `neals` and `nealsd`.
   `neals up` fail.
 - `neals-hosts-sync` (root) accepted arbitrary lines from the daemon-writable
   fragment. It now only applies `127.53.x.y {project}_{service}` entries.
+- `neals down` without arguments now shows `--all` in the usage line.
+- CI: locate `nealsd` from cargo test `build/.../out` layouts.
+- Flaky socket / HTTP port unit tests under parallel `cargo test`.
 
 ### Known limitations
 
