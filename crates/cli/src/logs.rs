@@ -383,7 +383,7 @@ pub fn print_process_logs(
             }
         }
         ticks = ticks.wrapping_add(1);
-        if ticks % 5 == 0 && crate::live::project_gone(project, &mut netns_pid) {
+        if ticks.is_multiple_of(5) && crate::live::project_gone(project, &mut netns_pid) {
             crate::style::print_dim(&format!("`{project}` is no longer running"));
             return Ok(());
         }
@@ -432,7 +432,7 @@ fn wait_for_process_logs(
             }
         }
         ticks += 1;
-        if ticks % 5 == 0 && crate::live::project_gone(project, &mut netns_pid) {
+        if ticks.is_multiple_of(5) && crate::live::project_gone(project, &mut netns_pid) {
             bail!("`{project}` stopped before `{process}` process logs appeared");
         }
         if out.is_file() || err.is_file() {

@@ -1,0 +1,40 @@
+# Format, lint, test and lifecycle smoke. Also called by release.yml to gate publishing.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CADDY_VERSION: "2.11.4"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install runtime tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap slirp4netns
+          curl -fsSL "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin caddy
+          # Ubuntu 24.04 blocks unprivileged user namespaces; bwrap needs them.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: ./contrib/smoke-lifecycle.sh

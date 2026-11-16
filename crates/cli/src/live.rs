@@ -158,7 +158,7 @@ fn follow_loop(
         }
 
         discover_ticks = discover_ticks.wrapping_add(1);
-        if discover_ticks % DISCOVER_EVERY == 0 {
+        if discover_ticks.is_multiple_of(DISCOVER_EVERY) {
             if project_gone(project, &mut netns_pid) {
                 return Ok(LiveOutcome::Exited);
             }

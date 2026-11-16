@@ -1,6 +1,9 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
+/// Bumped on any incompatible change to `Request`/`Response`; exchanged via `Ping`/`Pong`.
+pub const PROTOCOL_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Request {
     Ping,
@@ -11,7 +14,7 @@ pub enum Request {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Response {
-    Pong,
+    Pong { protocol: u32 },
     Ok,
     Error { message: String },
     Status { projects: Vec<ProjectRuntime> },
@@ -102,6 +105,17 @@ mod tests {
     }
 
     #[test]
+    fn pong_json_contract() {
+        let res = Response::Pong {
+            protocol: PROTOCOL_VERSION,
+        };
+        assert_eq!(
+            encode_response(&res).unwrap(),
+            "{\"Pong\":{\"protocol\":1}}\n"
+        );
+    }
+
+    #[test]
     fn request_round_trips() {
         let cases = [
             Request::Ping,
@@ -123,7 +137,9 @@ mod tests {
     #[test]
     fn response_round_trips() {
         let cases = [
-            Response::Pong,
+            Response::Pong {
+                protocol: PROTOCOL_VERSION,
+            },
             Response::Ok,
             Response::Error {
                 message: "not running".into(),

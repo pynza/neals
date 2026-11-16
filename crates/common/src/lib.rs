@@ -19,9 +19,13 @@ pub use hosts::{
 };
 pub use ipc::{
     decode_request, decode_response, encode_request, encode_response, ProjectRuntime, Request,
-    Response, ServiceRuntime,
+    Response, ServiceRuntime, PROTOCOL_VERSION,
 };
 pub use registry::{Project, Registry};
+pub use xdg::{
+    config_dir, daemon_socket, ensure_dir, is_system_daemon_socket, open_log, projects_file,
+    runtime_dir, state_dir, LOG_MAX_BYTES, SYSTEM_DAEMON_SOCKET,
+};
 
 pub const ALLOW_HOST_LOOPBACK_ENV: &str = "NEALS_ALLOW_HOST_LOOPBACK";
 
@@ -70,8 +74,3 @@ mod env_flag_tests {
         assert!(!env_flag(key));
     }
 }
-
-pub use xdg::{
-    config_dir, daemon_socket, ensure_dir, is_system_daemon_socket, open_log, projects_file,
-    runtime_dir, state_dir, LOG_MAX_BYTES, SYSTEM_DAEMON_SOCKET,
-};

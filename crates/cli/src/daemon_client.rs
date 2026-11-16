@@ -1,8 +1,9 @@
 use anyhow::{bail, Context, Result};
 use neals_common::{
     call_daemon, daemon_socket, ensure_dir, is_system_daemon_socket, open_log, state_dir, Request,
-    Response, SYSTEM_DAEMON_SOCKET,
+    Response, PROTOCOL_VERSION, SYSTEM_DAEMON_SOCKET,
 };
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -14,7 +15,7 @@ pub fn with_daemon(request: Request) -> Result<Response> {
 }
 
 pub fn ensure_daemon() -> Result<()> {
-    if ping_ok() {
+    if ping()? {
         return Ok(());
     }
 
@@ -35,15 +36,32 @@ pub fn ensure_daemon() -> Result<()> {
     start_nealsd()?;
     for _ in 0..40 {
         thread::sleep(Duration::from_millis(250));
-        if ping_ok() {
+        if ping()? {
             return Ok(());
         }
     }
     bail!("failed to start nealsd (check ~/.local/state/neals/nealsd.log and caddy.log)");
 }
 
-fn ping_ok() -> bool {
-    matches!(call_daemon(&Request::Ping), Ok(Response::Pong))
+/// `Ok(false)` means nothing is listening; a daemon speaking another protocol is an error.
+pub(crate) fn ping() -> Result<bool> {
+    match call_daemon(&Request::Ping) {
+        Ok(Response::Pong {
+            protocol: PROTOCOL_VERSION,
+        }) => Ok(true),
+        Ok(Response::Pong { protocol }) => bail!(
+            "nealsd speaks protocol {protocol} but neals expects {PROTOCOL_VERSION}; restart it \
+             (sudo systemctl restart nealsd@$USER, or `pkill nealsd` for an ad-hoc daemon)"
+        ),
+        Ok(other) => bail!("unexpected response to Ping: {other:?}"),
+        Err(err) if is_unreachable(&err) => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+fn is_unreachable(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<std::io::Error>()
+        .is_some_and(|e| matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused))
 }
 
 fn start_nealsd() -> Result<()> {
@@ -96,4 +114,53 @@ fn nealsd_log_path() -> Result<PathBuf> {
     let dir = state_dir()?;
     ensure_dir(&dir)?;
     Ok(dir.join("nealsd.log"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+
+    fn serve_once(path: &std::path::Path, reply: String) -> thread::JoinHandle<()> {
+        let _ = std::fs::remove_file(path);
+        let listener = UnixListener::bind(path).unwrap();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            BufReader::new(&stream)
+                .read_line(&mut String::new())
+                .unwrap();
+            stream.write_all(reply.as_bytes()).unwrap();
+        })
+    }
+
+    #[test]
+    fn ping_tells_absent_current_and_incompatible_daemons_apart() {
+        let sock = std::env::temp_dir().join(format!("neals-ping-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&sock);
+        std::env::set_var("NEALS_SOCKET", &sock);
+
+        assert!(!ping().unwrap(), "no socket");
+
+        let pong = |protocol| format!("{{\"Pong\":{{\"protocol\":{protocol}}}}}\n");
+        drop(UnixListener::bind(&sock).unwrap());
+        assert!(!ping().unwrap(), "stale socket without a listener");
+
+        let server = serve_once(&sock, pong(PROTOCOL_VERSION));
+        assert!(ping().unwrap(), "matching protocol");
+        server.join().unwrap();
+
+        let server = serve_once(&sock, pong(PROTOCOL_VERSION + 1));
+        let err = ping().unwrap_err().to_string();
+        assert!(err.contains("protocol") && err.contains("restart"), "{err}");
+        server.join().unwrap();
+
+        let server = serve_once(&sock, "\"Pong\"\n".into());
+        let err = format!("{:#}", ping().unwrap_err());
+        assert!(err.contains("restart"), "pre-1.0 daemon: {err}");
+        server.join().unwrap();
+
+        std::env::remove_var("NEALS_SOCKET");
+        let _ = std::fs::remove_file(&sock);
+    }
 }

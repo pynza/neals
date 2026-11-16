@@ -22,11 +22,11 @@ fn state_dir_with(xdg_state_home: Option<OsString>, home: PathBuf) -> PathBuf {
     }
 }
 
-fn runtime_dir_with(xdg_runtime_dir: Option<OsString>) -> PathBuf {
-    match xdg_runtime_dir {
-        Some(xdg) => PathBuf::from(xdg).join("neals"),
-        None => PathBuf::from("/tmp/neals"),
-    }
+fn runtime_dir_with(xdg_runtime_dir: Option<OsString>) -> Result<PathBuf> {
+    let xdg = xdg_runtime_dir
+        .filter(|dir| !dir.is_empty())
+        .context("$XDG_RUNTIME_DIR is not set")?;
+    Ok(PathBuf::from(xdg).join("neals"))
 }
 
 pub fn config_dir() -> Result<PathBuf> {
@@ -44,7 +44,7 @@ pub fn state_dir() -> Result<PathBuf> {
 }
 
 pub fn runtime_dir() -> Result<PathBuf> {
-    Ok(runtime_dir_with(std::env::var_os("XDG_RUNTIME_DIR")))
+    runtime_dir_with(std::env::var_os("XDG_RUNTIME_DIR"))
 }
 
 pub fn projects_file() -> Result<PathBuf> {
@@ -54,11 +54,11 @@ pub fn projects_file() -> Result<PathBuf> {
 pub const SYSTEM_DAEMON_SOCKET: &str = "/run/neals/nealsd.sock";
 
 pub fn daemon_socket() -> Result<PathBuf> {
-    Ok(daemon_socket_with(
+    daemon_socket_with(
         std::env::var_os("NEALS_SOCKET"),
         Path::new(SYSTEM_DAEMON_SOCKET).exists(),
-        runtime_dir()?,
-    ))
+        std::env::var_os("XDG_RUNTIME_DIR"),
+    )
 }
 
 pub fn is_system_daemon_socket(path: &Path) -> bool {
@@ -68,19 +68,19 @@ pub fn is_system_daemon_socket(path: &Path) -> bool {
 fn daemon_socket_with(
     neals_socket: Option<OsString>,
     system_socket_exists: bool,
-    runtime: PathBuf,
-) -> PathBuf {
+    xdg_runtime_dir: Option<OsString>,
+) -> Result<PathBuf> {
     if let Some(raw) = neals_socket {
         let s = raw.to_string_lossy();
         let trimmed = s.trim();
         if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
+            return Ok(PathBuf::from(trimmed));
         }
     }
     if system_socket_exists {
-        return PathBuf::from(SYSTEM_DAEMON_SOCKET);
+        return Ok(PathBuf::from(SYSTEM_DAEMON_SOCKET));
     }
-    runtime.join("nealsd.sock")
+    Ok(runtime_dir_with(xdg_runtime_dir)?.join("nealsd.sock"))
 }
 
 pub fn ensure_dir(path: &Path) -> Result<()> {
@@ -128,40 +128,48 @@ mod tests {
 
     #[test]
     fn runtime_dir_prefers_xdg() {
-        let got = runtime_dir_with(Some(OsString::from("/run/user/1000")));
+        let got = runtime_dir_with(Some(OsString::from("/run/user/1000"))).unwrap();
         assert_eq!(got, PathBuf::from("/run/user/1000/neals"));
     }
 
     #[test]
-    fn runtime_dir_falls_back_to_tmp() {
-        assert_eq!(runtime_dir_with(None), PathBuf::from("/tmp/neals"));
+    fn runtime_dir_requires_xdg_instead_of_guessing_a_shared_path() {
+        assert!(runtime_dir_with(None).is_err());
+        assert!(runtime_dir_with(Some(OsString::new())).is_err());
     }
 
     #[test]
     fn daemon_socket_joins_runtime_dir() {
-        let runtime = runtime_dir_with(Some(OsString::from("/run/user/1000")));
+        let xdg = Some(OsString::from("/run/user/1000"));
         assert_eq!(
-            daemon_socket_with(None, false, runtime),
+            daemon_socket_with(None, false, xdg).unwrap(),
             PathBuf::from("/run/user/1000/neals/nealsd.sock")
         );
     }
 
     #[test]
     fn daemon_socket_prefers_env_override() {
-        let runtime = PathBuf::from("/run/user/1000/neals");
+        let xdg = Some(OsString::from("/run/user/1000"));
         assert_eq!(
-            daemon_socket_with(Some(OsString::from("/tmp/custom.sock")), true, runtime),
+            daemon_socket_with(Some(OsString::from("/tmp/custom.sock")), true, xdg).unwrap(),
             PathBuf::from("/tmp/custom.sock")
         );
     }
 
     #[test]
     fn daemon_socket_prefers_system_when_present() {
-        let runtime = PathBuf::from("/run/user/1000/neals");
+        let xdg = Some(OsString::from("/run/user/1000"));
         assert_eq!(
-            daemon_socket_with(None, true, runtime),
+            daemon_socket_with(None, true, xdg).unwrap(),
             PathBuf::from(SYSTEM_DAEMON_SOCKET)
         );
+    }
+
+    #[test]
+    fn daemon_socket_needs_xdg_only_without_override_or_system_daemon() {
+        assert!(daemon_socket_with(None, true, None).is_ok());
+        assert!(daemon_socket_with(Some(OsString::from("/tmp/x.sock")), false, None).is_ok());
+        assert!(daemon_socket_with(None, false, None).is_err());
     }
 
     #[test]

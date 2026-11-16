@@ -46,7 +46,9 @@ when no system socket is present.
 System unit (RuntimeDirectory=neals, XDG_RUNTIME_DIR=/run).
 .TP
 .I $XDG_RUNTIME_DIR/neals/nealsd.sock
-Ad-hoc / development.
+Ad-hoc / development. Created with mode 0600;
+.B $XDG_RUNTIME_DIR
+must be set.
 .PP
 Override with
 .BR NEALS_SOCKET .

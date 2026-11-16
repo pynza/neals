@@ -172,13 +172,7 @@ fn clear_caps_for_userns() -> std::io::Result<()> {
         permitted: 0,
         inheritable: 0,
     }; 2];
-    let rc = unsafe {
-        libc::syscall(
-            libc::SYS_capset,
-            std::ptr::addr_of_mut!(hdr),
-            data.as_ptr(),
-        )
-    };
+    let rc = unsafe { libc::syscall(libc::SYS_capset, std::ptr::addr_of_mut!(hdr), data.as_ptr()) };
     if rc != 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -421,10 +415,7 @@ mod tests {
             .windows(2)
             .position(|w| w[0] == "--ro-bind" && w[1] == hosts.to_string_lossy())
             .expect("bwrap should bind the generated hosts file");
-        assert!(
-            hosts_bind > tmpfs,
-            "hosts bound before the tmpfs: {argv:?}"
-        );
+        assert!(hosts_bind > tmpfs, "hosts bound before the tmpfs: {argv:?}");
 
         let uid = nix::unistd::getuid();
         let session = format!("/run/user/{uid}");

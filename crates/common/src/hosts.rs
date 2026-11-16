@@ -1,5 +1,6 @@
+use crate::devenv::{is_valid_project_name, is_valid_service_name};
 use crate::xdg::{ensure_dir, state_dir};
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 
@@ -62,7 +63,34 @@ pub fn system_hosts_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/etc/hosts"))
 }
 
+/// The fragment is written by an unprivileged daemon but merged by a root service, so only
+/// `127.53.x.y {project}_{service}` entries may reach `/etc/hosts`.
+fn validate_host_block(block: &str) -> Result<()> {
+    for (index, line) in block.lines().enumerate() {
+        ensure!(
+            line.is_empty() || matches!(line, BEGIN_MARKER | END_MARKER) || is_neals_entry(line),
+            "invalid hosts fragment: line {} is not a neals entry",
+            index + 1
+        );
+    }
+    Ok(())
+}
+
+fn is_neals_entry(line: &str) -> bool {
+    let Some((ip, name)) = line.split_once(' ') else {
+        return false;
+    };
+    let Some((project, service)) = name.split_once('_') else {
+        return false;
+    };
+    ip.parse::<Ipv4Addr>()
+        .is_ok_and(|ip| ip.octets()[..2] == [127, 53])
+        && is_valid_project_name(project)
+        && is_valid_service_name(service)
+}
+
 pub fn apply_hosts_file(path: &Path, block: &str) -> Result<()> {
+    validate_host_block(block)?;
     let existing = if path.exists() {
         std::fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?
@@ -97,8 +125,7 @@ fn write_in_place(path: &Path, contents: &str) -> Result<()> {
 
 pub fn read_hosts_fragment(path: &Path) -> Result<String> {
     if path.exists() {
-        std::fs::read_to_string(path)
-            .with_context(|| format!("failed to read {}", path.display()))
+        std::fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))
     } else {
         Ok(String::new())
     }
@@ -158,10 +185,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "neals-hosts-{tag}-{}-{nanos}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("neals-hosts-{tag}-{}-{nanos}", std::process::id()));
         ensure_dir(&dir).unwrap();
         dir
     }
@@ -230,6 +255,49 @@ mod tests {
         assert!(text.contains("demo_redis"));
         assert!(!text.contains("demo_db"));
         assert!(text.contains("127.0.0.1 localhost"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_rejects_entries_outside_the_neals_range_and_keeps_the_file() {
+        let dir = tmp_dir("reject");
+        let hosts = dir.join("hosts");
+        let original = "127.0.0.1 localhost\n";
+        std::fs::write(&hosts, original).unwrap();
+
+        let forged = [
+            "# BEGIN neals\n1.2.3.4 github.com\n# END neals\n",
+            "# BEGIN neals\n127.0.0.1 demo_db\n# END neals\n",
+            "# BEGIN neals\n127.53.0.1 github.com\n# END neals\n",
+            "# BEGIN neals\n127.53.0.1 demo_db # x\n# END neals\n",
+            "# BEGIN neals\n127.53.0.1 demo_db github.com\n# END neals\n",
+            "# BEGIN neals\n127.53.0.1 Demo_db\n# END neals\n",
+            "# BEGIN neals\nroot:x:0:0:root:/root:/bin/sh\n# END neals\n",
+        ];
+        for block in forged {
+            let err = apply_hosts_file(&hosts, block).unwrap_err();
+            assert!(
+                err.to_string().contains("invalid hosts fragment"),
+                "{block}"
+            );
+            assert_eq!(std::fs::read_to_string(&hosts).unwrap(), original);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_accepts_rendered_and_empty_fragments() {
+        let dir = tmp_dir("accept");
+        let hosts = dir.join("hosts");
+        let block = render_host_block(&[(Ipv4Addr::new(127, 53, 0, 1), "my-app_db-1".into())]);
+        apply_hosts_file(&hosts, &block).unwrap();
+        assert!(std::fs::read_to_string(&hosts)
+            .unwrap()
+            .contains("my-app_db-1"));
+        apply_hosts_file(&hosts, "").unwrap();
+        assert!(!std::fs::read_to_string(&hosts)
+            .unwrap()
+            .contains("my-app_db-1"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

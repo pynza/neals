@@ -8,5 +8,4 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
-# Serialize concurrent triggers (up/down races).
 ExecStart=/usr/local/bin/neals hosts apply --from /run/neals/hosts

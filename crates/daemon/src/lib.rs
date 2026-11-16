@@ -11,8 +11,10 @@ pub use state::AppState;
 use anyhow::{bail, Context, Result};
 use caddy::CaddyManager;
 use neals_common::{
-    daemon_socket, decode_request, encode_response, ensure_dir, runtime_dir,
+    daemon_socket, decode_request, encode_response, ensure_dir, runtime_dir, Response,
 };
+use std::fs::Permissions;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -25,10 +27,7 @@ pub async fn run() -> Result<()> {
     let runtime = runtime_dir()?;
     ensure_dir(&runtime)?;
     let sock = daemon_socket()?;
-    prepare_socket(&sock).await?;
-
-    let listener = UnixListener::bind(&sock)
-        .with_context(|| format!("failed to bind {}", sock.display()))?;
+    let listener = bind_socket(&sock).await?;
     eprintln!("nealsd: ipc {}", sock.display());
 
     let caddy = CaddyManager::start()
@@ -45,6 +44,7 @@ pub async fn run() -> Result<()> {
         caddy,
         leases: Default::default(),
     }));
+    state.lock().await.reconcile().await;
     let state_accept = Arc::clone(&state);
     let state_reap = Arc::clone(&state);
 
@@ -91,6 +91,16 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
+async fn bind_socket(path: &Path) -> Result<UnixListener> {
+    prepare_socket(path).await?;
+    let listener =
+        UnixListener::bind(path).with_context(|| format!("failed to bind {}", path.display()))?;
+    tokio::fs::set_permissions(path, Permissions::from_mode(0o600))
+        .await
+        .with_context(|| format!("failed to restrict {}", path.display()))?;
+    Ok(listener)
+}
+
 async fn prepare_socket(path: &Path) -> Result<()> {
     if !path.exists() {
         return Ok(());
@@ -114,8 +124,12 @@ async fn handle_connection(stream: UnixStream, state: Arc<Mutex<AppState>>) -> R
         .await
         .context("failed to read request")?
         .context("client closed without sending a request")?;
-    let request = decode_request(&line)?;
-    let response = handle_request(request, &state).await;
+    let response = match decode_request(&line) {
+        Ok(request) => handle_request(request, &state).await,
+        Err(err) => Response::Error {
+            message: format!("{err:#}"),
+        },
+    };
     let encoded = encode_response(&response)?;
     writer
         .write_all(encoded.as_bytes())
@@ -142,5 +156,62 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {}
         _ = terminate => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use neals_common::{decode_response, PROTOCOL_VERSION};
+
+    fn temp_socket(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("nealsd-{tag}-{}.sock", std::process::id()))
+    }
+
+    async fn exchange(request: &str) -> Response {
+        let (client, server) = UnixStream::pair().unwrap();
+        let state = Arc::new(Mutex::new(AppState::default()));
+        let served = tokio::spawn(handle_connection(server, state));
+        let (reader, mut writer) = client.into_split();
+        writer.write_all(request.as_bytes()).await.unwrap();
+        let reply = BufReader::new(reader).lines().next_line().await.unwrap();
+        served.await.unwrap().unwrap();
+        decode_response(&reply.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn socket_is_owner_only() {
+        let path = temp_socket("mode");
+        let _listener = bind_socket(&path).await.unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn live_socket_is_refused_and_stale_socket_is_replaced() {
+        let path = temp_socket("stale");
+        let live = bind_socket(&path).await.unwrap();
+        assert!(bind_socket(&path).await.is_err());
+        drop(live);
+        bind_socket(&path).await.unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn ping_reports_the_protocol_version() {
+        assert_eq!(
+            exchange("{\"Ping\":null}\n").await,
+            Response::Pong {
+                protocol: PROTOCOL_VERSION
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn undecodable_request_gets_an_error_instead_of_a_dropped_connection() {
+        for request in ["{\"FromTheFuture\":null}\n", "garbage\n"] {
+            assert!(matches!(exchange(request).await, Response::Error { .. }));
+        }
     }
 }

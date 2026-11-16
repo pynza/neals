@@ -12,7 +12,8 @@ Global: `-y` / `--yes` skips confirmations. `neals --help` for full text.
 | `neals unregister <name>` | Remove from registry |
 | `neals prune` | Drop ghost entries (missing paths) |
 | `neals up <name> [-d]` | Start project; follow process logs unless `-d` |
-| `neals down <name>` | Stop project |
+| `neals down <name>` / `--all` | Stop a project, or every running project |
+| `neals restart <name> [-d]` | Stop if running, then start (like `up`) |
 | `neals refresh <name>` | Soft re-eval (`--update`, `--hard`) |
 | `neals status` | Running projects, PIDs, host endpoints |
 | `neals logs <name> [-f]` | Tail logs; `-f` follows all processes |
@@ -91,7 +92,7 @@ is `cd be`, not a flag.
 | `~/.local/state/neals/nealsd.log` | Ad-hoc daemon log |
 | `~/.local/state/neals/caddy.json` | Generated Caddy config |
 | `~/.local/state/neals/caddy.log` | Caddy log |
-| `$XDG_RUNTIME_DIR/neals/` | Ad-hoc IPC socket + per-project runtime |
+| `$XDG_RUNTIME_DIR/neals/` | Ad-hoc IPC socket (0600) + per-project runtime; `$XDG_RUNTIME_DIR` must be set |
 | `/run/neals/nealsd.sock` | System daemon IPC (if installed) |
 | `<project>/.neals/*.sock` | Convenience symlinks to UNIX sockets |
 

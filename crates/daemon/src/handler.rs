@@ -3,7 +3,7 @@ use crate::netns::{self, bwrap_command, require_tools, start_proxies, wait_netns
 use crate::state::{stop_process_group, AppState, BoundRoute, BoundTarget, RunningProject};
 use neals_common::{
     ensure_dir, env_port_var, open_log, read_neals_services, state_dir, Registry, Request,
-    Response, ServiceDecl, ServiceKind,
+    Response, ServiceDecl, ServiceKind, PROTOCOL_VERSION,
 };
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -13,7 +13,9 @@ use tokio::sync::Mutex;
 
 pub async fn handle_request(request: Request, state: &Arc<Mutex<AppState>>) -> Response {
     match request {
-        Request::Ping => Response::Pong,
+        Request::Ping => Response::Pong {
+            protocol: PROTOCOL_VERSION,
+        },
         Request::Status => {
             let state = state.lock().await;
             Response::Status {
@@ -345,7 +347,6 @@ fn up_command() -> (String, Vec<String>) {
 }
 
 fn stdbuf_on_path() -> bool {
-    std::env::var_os("PATH").is_some_and(|paths| {
-        std::env::split_paths(&paths).any(|dir| dir.join("stdbuf").is_file())
-    })
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join("stdbuf").is_file()))
 }

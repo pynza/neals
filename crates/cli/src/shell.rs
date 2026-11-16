@@ -72,11 +72,7 @@ pub fn run_project_exec(project: &str, path: &Path, command: &[String]) -> Resul
         bail!("no command provided");
     }
     let netns_pid = require_netns_pid(project)?;
-    let mut args = vec![
-        "--quiet".to_string(),
-        "shell".to_string(),
-        "--".to_string(),
-    ];
+    let mut args = vec!["--quiet".to_string(), "shell".to_string(), "--".to_string()];
     args.extend(command.iter().cloned());
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let status = spawn_nsenter_devenv(path, project, netns_pid, &refs, &[])?

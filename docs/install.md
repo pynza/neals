@@ -59,6 +59,18 @@ builds a host-arch `.deb` and `dpkg -i`s it (`--reinstall` equivalent, same
 
 Unit details: [contrib/systemd/README.md](../contrib/systemd/README.md).
 
+### Upgrading
+
+`neals` and `nealsd` talk over a versioned protocol. Packages do not restart a
+running daemon, so after an upgrade restart it (this stops running projects):
+
+```bash
+sudo systemctl restart "nealsd@$USER"   # system daemon
+pkill nealsd                            # ad-hoc daemon; auto-starts on next use
+```
+
+Until then `neals` reports the mismatch instead of guessing.
+
 ## Manual install (Arch / tarball / from source)
 
 ```bash

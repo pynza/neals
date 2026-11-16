@@ -2,7 +2,7 @@ use crate::caddy::CaddyManager;
 use crate::hosts;
 use crate::netns::SlirpHandle;
 use crate::ports::LoopbackLeases;
-use neals_common::{service_host_name, ProjectRuntime, ServiceRuntime};
+use neals_common::{service_host_name, ProjectRuntime, Registry, ServiceRuntime};
 use nix::errno::Errno;
 use nix::sys::signal::{kill, killpg, Signal};
 use nix::unistd::Pid;
@@ -31,7 +31,9 @@ fn tcp_address(host_ip: Ipv4Addr, host_port: u16, guest_port: u16) -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoundTarget {
-    Unix { socket_file: String },
+    Unix {
+        socket_file: String,
+    },
     Tcp {
         host_ip: Ipv4Addr,
         host_port: u16,
@@ -121,20 +123,11 @@ pub struct RunningProject {
     pub _proxy_helpers: Vec<Child>,
 }
 
+#[derive(Default)]
 pub struct AppState {
     pub projects: HashMap<String, RunningProject>,
     pub caddy: CaddyManager,
     pub leases: LoopbackLeases,
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            projects: HashMap::new(),
-            caddy: CaddyManager::disabled(),
-            leases: LoopbackLeases::default(),
-        }
-    }
 }
 
 impl AppState {
@@ -193,6 +186,18 @@ impl AppState {
         if let Err(err) = hosts::sync_host_aliases(&snapshot) {
             eprintln!("nealsd: hosts sync: {err:#}");
         }
+    }
+
+    /// Clears what a previous, uncleanly terminated daemon left behind: project processes that
+    /// outlived it and its host DNS aliases. Must run before any project is started.
+    pub async fn reconcile(&self) {
+        let projects = Registry::load().map(|r| r.projects).unwrap_or_default();
+        for project in projects {
+            if let Ok(runtime) = crate::caddy::project_runtime_dir(&project.name) {
+                sweep_project_processes(&runtime).await;
+            }
+        }
+        self.sync_hosts();
     }
 
     pub async fn finish_cleanup(&mut self, running: &RunningProject) {

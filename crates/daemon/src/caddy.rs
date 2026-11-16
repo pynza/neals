@@ -1,5 +1,5 @@
-use anyhow::{bail, Context, Result};
 use crate::state::{BoundRoute, BoundTarget};
+use anyhow::{bail, Context, Result};
 use neals_common::{ensure_dir, open_log, runtime_dir, state_dir, ServiceDecl, ServiceKind};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -177,7 +177,7 @@ pub fn build_caddy_config(
     log_path: &Path,
     projects: &[(String, Vec<BoundRoute>)],
 ) -> Value {
-    let runtime = runtime_dir().unwrap_or_else(|_| PathBuf::from("/tmp/neals"));
+    let runtime = admin_sock.parent().unwrap_or(Path::new(""));
     let mut routes = Vec::new();
 
     for (project, decls) in projects {
@@ -192,9 +192,7 @@ pub fn build_caddy_config(
                     format!("unix/{}", sock.display())
                 }
                 BoundTarget::Tcp {
-                    host_ip,
-                    host_port,
-                    ..
+                    host_ip, host_port, ..
                 } => format!("{host_ip}:{host_port}"),
             };
             routes.push(json!({
@@ -248,9 +246,10 @@ async fn post_load(admin_sock: &Path, body: &str) -> Result<()> {
         .await
         .with_context(|| format!("connect {}", admin_sock.display()))?;
 
+    // Caddy 2.8 answers 403 to any non-empty Host on a unix admin socket; an empty one works on 2.8 and 2.11.
     let request = format!(
         "POST /load HTTP/1.1\r\n\
-         Host: localhost\r\n\
+         Host:\r\n\
          Content-Type: application/json\r\n\
          Content-Length: {}\r\n\
          Connection: close\r\n\
@@ -391,20 +390,18 @@ pub fn cleanup_neals_dir(project_dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::Mutex;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
     #[tokio::test]
     async fn apply_routes_restarts_caddy_when_admin_dies() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        if std::process::Command::new("caddy")
+        let _guard = ENV_LOCK.lock().await;
+        if !std::process::Command::new("caddy")
             .arg("version")
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-            == false
+            .is_ok_and(|o| o.status.success())
         {
             eprintln!("skip: caddy not on PATH");
             return;

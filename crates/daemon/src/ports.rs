@@ -61,13 +61,9 @@ fn octet_key(ip: Ipv4Addr) -> Option<(u8, u8)> {
 }
 
 fn bind_ephemeral(ip: Ipv4Addr) -> Result<u16> {
-    for _ in 0..64 {
-        let listener = TcpListener::bind(SocketAddr::from((ip, 0)))?;
-        let port = listener.local_addr()?.port();
-        drop(listener);
-        return Ok(port);
-    }
-    bail!("failed to allocate an ephemeral port on {ip}");
+    Ok(TcpListener::bind(SocketAddr::from((ip, 0)))?
+        .local_addr()?
+        .port())
 }
 
 fn bind_preferred(ip: Ipv4Addr, start: u16) -> Result<u16> {

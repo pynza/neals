@@ -46,7 +46,8 @@ neals up <name>        # routes + follow logs (-d to detach)
 neals status
 neals bash <name>      # interactive shell in project netns (must be up)
 neals exec <name> -- … # non-interactive command in that netns
-neals down <name>
+neals restart <name>   # stop if running, then start (-d to detach)
+neals down <name>      # or: neals down --all
 ```
 
 Log follow (`neals up` / `neals logs -f`): `Ctrl+Q` detach, `Ctrl+B` shell,
@@ -72,7 +73,7 @@ Env names: service → uppercase, `-` → `_` (`api-backend` → `NEALS_API_BACK
 | Command | Role |
 |---------|------|
 | `init` / `register` / `list` / `unregister` / `prune` | Registry |
-| `up` / `down` / `refresh` (`--update`, `--hard`) | Lifecycle |
+| `up` / `down` (`--all`) / `restart` / `refresh` (`--update`, `--hard`) | Lifecycle |
 | `status` / `logs` / `info` / `doctor` | Inspect |
 | `hosts` / `hosts apply` | Show / install host DNS fragment |
 | `bash` / `exec -- …` | Enter netns (interactive / one-shot) |

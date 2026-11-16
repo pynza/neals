@@ -2,9 +2,9 @@ use crate::daemon_client::find_nealsd;
 use crate::style;
 use anyhow::Result;
 use neals_common::{
-    allow_host_loopback, call_daemon, config_dir, ensure_dir, runtime_dir, state_dir,
-    state_hosts_path, system_hosts_path, BEGIN_MARKER, Request, Response, ALLOW_HOST_LOOPBACK_ENV,
-    SYSTEM_DAEMON_SOCKET, SYSTEM_HOSTS_MIRROR,
+    allow_host_loopback, config_dir, ensure_dir, runtime_dir, state_dir, state_hosts_path,
+    system_hosts_path, ALLOW_HOST_LOOPBACK_ENV, BEGIN_MARKER, SYSTEM_DAEMON_SOCKET,
+    SYSTEM_HOSTS_MIRROR,
 };
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -172,7 +172,7 @@ fn check_devenv() -> Check {
 
 fn check_system_daemon() -> Check {
     if Path::new(SYSTEM_DAEMON_SOCKET).exists() {
-        Check::info("system", format!("{SYSTEM_DAEMON_SOCKET}"))
+        Check::info("system", SYSTEM_DAEMON_SOCKET)
     } else {
         Check::warn("system", "ad-hoc mode; see contrib/systemd/")
     }
@@ -293,17 +293,17 @@ fn check_dir_writable(label: &'static str, path: PathBuf) -> Check {
 }
 
 fn check_daemon_ping() -> Check {
-    match call_daemon(&Request::Ping) {
-        Ok(Response::Pong) => Check::ok("daemon", "responding"),
-        Ok(other) => Check::fail("daemon", format!("unexpected: {other:?}")),
-        Err(_) if Path::new(SYSTEM_DAEMON_SOCKET).exists() => {
+    match crate::daemon_client::ping() {
+        Ok(true) => Check::ok("daemon", "responding"),
+        Err(err) => Check::fail("daemon", format!("{err:#}")),
+        Ok(false) if Path::new(SYSTEM_DAEMON_SOCKET).exists() => {
             let unit = systemctl_unit_hint();
             Check::warn(
                 "daemon",
                 format!("not responding — journalctl -u {unit} -n 50"),
             )
         }
-        Err(_) => Check::info("daemon", "not running (auto-starts on `neals up`)"),
+        Ok(false) => Check::info("daemon", "not running (auto-starts on `neals up`)"),
     }
 }
 
@@ -311,15 +311,10 @@ fn check_host_loopback() -> Check {
     if daemon_allows_host_loopback() {
         Check::info(
             "host-loopback",
-            format!("allowed; guest can reach host 127.0.0.1 via 10.0.2.2"),
+            "allowed; guest can reach host 127.0.0.1 via 10.0.2.2",
         )
     } else {
-        Check::info(
-            "host-loopback",
-            format!(
-                "disabled (default); see docs/services.md"
-            ),
-        )
+        Check::info("host-loopback", "disabled (default); see docs/services.md")
     }
 }
 

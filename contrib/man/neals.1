@@ -90,6 +90,13 @@ stops the project (other follow tabs exit too).
 .BI down " name"
 Stop a running project.
 .TP
+.B down \-\-all
+Stop every running project.
+.TP
+.BI restart " name " [ \-d ]
+Stop the project if it is running, then start it like
+.BR up .
+.TP
 .BI refresh " name " [ \-\-update ] [ \-\-hard ]
 Stop if running and re-evaluate the devenv environment.
 Does not start the project; run
@@ -167,7 +174,9 @@ Project registry.
 Project logs, Caddy config, shell rc snippets.
 .TP
 .I $XDG_RUNTIME_DIR/neals/
-Ad-hoc IPC socket and per-project runtime files.
+Ad-hoc IPC socket (mode 0600) and per-project runtime files.
+.B $XDG_RUNTIME_DIR
+must be set.
 .TP
 .I /run/neals/nealsd.sock
 System daemon IPC socket (when installed).

@@ -1,5 +1,5 @@
 use neals_common::{
-    decode_response, encode_request, Project, Registry, Request, Response,
+    decode_response, encode_request, Project, Registry, Request, Response, PROTOCOL_VERSION,
 };
 use nealsd::{handle_request, AppState};
 use std::fs;
@@ -31,11 +31,7 @@ fn unique_temp(prefix: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!(
-        "{prefix}-{}-{}",
-        std::process::id(),
-        nanos
-    ))
+    std::env::temp_dir().join(format!("{prefix}-{}-{}", std::process::id(), nanos))
 }
 
 struct TestEnv {
@@ -132,7 +128,12 @@ async fn ping_up_status_down() {
     let _env = TestEnv::setup();
     let state = Arc::new(Mutex::new(AppState::default()));
 
-    assert_eq!(roundtrip(&state, Request::Ping).await, Response::Pong);
+    assert_eq!(
+        roundtrip(&state, Request::Ping).await,
+        Response::Pong {
+            protocol: PROTOCOL_VERSION
+        }
+    );
 
     assert_eq!(
         roundtrip(
@@ -277,8 +278,44 @@ async fn socket_ping_roundtrip() {
         .unwrap();
     let mut lines = BufReader::new(client).lines();
     let reply = lines.next_line().await.unwrap().unwrap();
-    assert_eq!(decode_response(&reply).unwrap(), Response::Pong);
+    assert_eq!(
+        decode_response(&reply).unwrap(),
+        Response::Pong {
+            protocol: PROTOCOL_VERSION
+        }
+    );
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn reconcile_clears_what_a_dead_daemon_left_behind() {
+    let env = TestEnv::setup();
+    let hosts = PathBuf::from(std::env::var_os("NEALS_HOSTS_FILE").unwrap());
+    fs::write(
+        &hosts,
+        "127.0.0.1 localhost\n# BEGIN neals\n127.53.0.1 demo_db\n# END neals\n",
+    )
+    .unwrap();
+    let runtime = env.root.join("runtime/neals/demo");
+    let spawned = std::process::Command::new("sh")
+        .args(["-c", "sleep 300 >/dev/null 2>&1 & echo $!"])
+        .env("NEALS_RUNTIME", &runtime)
+        .output()
+        .unwrap();
+    let orphan = String::from_utf8(spawned.stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    let orphan_proc = PathBuf::from("/proc").join(&orphan);
+    assert!(orphan_proc.exists(), "orphan should start alive");
+
+    AppState::default().reconcile().await;
+
+    assert!(!orphan_proc.exists(), "orphan {orphan} survived reconcile");
+    assert_eq!(
+        fs::read_to_string(&hosts).unwrap().trim(),
+        "127.0.0.1 localhost"
+    );
 }
 
 #[tokio::test]
@@ -408,14 +445,14 @@ async fn multi_project_tcp_routes_have_distinct_hosts_and_ports() {
     let _ = roundtrip(
         &state,
         Request::Down {
-            project: "demo".into()
+            project: "demo".into(),
         },
     )
     .await;
     let _ = roundtrip(
         &state,
         Request::Down {
-            project: "other".into()
+            project: "other".into(),
         },
     )
     .await;
@@ -492,7 +529,7 @@ async fn preferred_ports_private_and_proxy_status() {
     let _ = roundtrip(
         &state,
         Request::Down {
-            project: "demo".into()
+            project: "demo".into(),
         },
     )
     .await;
@@ -558,14 +595,14 @@ async fn two_projects_same_preferred_get_distinct_ports() {
     let _ = roundtrip(
         &state,
         Request::Down {
-            project: "demo".into()
+            project: "demo".into(),
         },
     )
     .await;
     let _ = roundtrip(
         &state,
         Request::Down {
-            project: "other".into()
+            project: "other".into(),
         },
     )
     .await;
@@ -630,14 +667,14 @@ async fn concurrent_up_same_preferred_no_collision() {
     let _ = roundtrip(
         &state,
         Request::Down {
-            project: "demo".into()
+            project: "demo".into(),
         },
     )
     .await;
     let _ = roundtrip(
         &state,
         Request::Down {
-            project: "other".into()
+            project: "other".into(),
         },
     )
     .await;
@@ -742,10 +779,22 @@ time.sleep(3600)
     let mut port2 = None;
     for _ in 0..100 {
         if ready1.is_file() {
-            port1 = Some(fs::read_to_string(&ready1).unwrap().trim().parse::<u16>().unwrap());
+            port1 = Some(
+                fs::read_to_string(&ready1)
+                    .unwrap()
+                    .trim()
+                    .parse::<u16>()
+                    .unwrap(),
+            );
         }
         if ready2.is_file() {
-            port2 = Some(fs::read_to_string(&ready2).unwrap().trim().parse::<u16>().unwrap());
+            port2 = Some(
+                fs::read_to_string(&ready2)
+                    .unwrap()
+                    .trim()
+                    .parse::<u16>()
+                    .unwrap(),
+            );
         }
         if port1.is_some() && port2.is_some() {
             break;
@@ -788,14 +837,14 @@ time.sleep(3600)
     let _ = roundtrip(
         &state,
         Request::Down {
-            project: "redis-project-1".into()
+            project: "redis-project-1".into(),
         },
     )
     .await;
     let _ = roundtrip(
         &state,
         Request::Down {
-            project: "redis-project-2".into()
+            project: "redis-project-2".into(),
         },
     )
     .await;

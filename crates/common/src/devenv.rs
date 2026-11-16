@@ -318,7 +318,10 @@ pub fn inject_neals_stanza(src: &str, name: &str) -> Result<String> {
     }
 
     let root = Root::parse(src);
-    let expr = root.tree().expr().context("devenv.nix is empty or not Nix")?;
+    let expr = root
+        .tree()
+        .expr()
+        .context("devenv.nix is empty or not Nix")?;
     let set = top_level_attrset(&expr).context(
         "devenv.nix has no top-level attrset to attach `neals` to \
          (expected `{ … }` or `{ pkgs, … }: { … }`)",
@@ -779,7 +782,10 @@ mod tests {
     #[test]
     fn service_host_name_joins_project_and_service() {
         assert_eq!(service_host_name("demo", "db"), "demo_db");
-        assert_eq!(service_host_name("laravel-nuxt", "mailpit"), "laravel-nuxt_mailpit");
+        assert_eq!(
+            service_host_name("laravel-nuxt", "mailpit"),
+            "laravel-nuxt_mailpit"
+        );
     }
 
     #[test]

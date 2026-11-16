@@ -1,7 +1,6 @@
-use crate::daemon_client::with_daemon;
 use crate::style;
 use anyhow::{bail, Context, Result};
-use neals_common::{runtime_dir, Registry, Request, Response, SYSTEM_DAEMON_SOCKET};
+use neals_common::{runtime_dir, Registry, SYSTEM_DAEMON_SOCKET};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -63,13 +62,8 @@ fn is_safe_project_name(name: &str) -> bool {
         && !name.contains('\0')
 }
 
-fn stop_if_running(project: &str) -> Result<()> {
-    let running = match with_daemon(Request::Status)? {
-        Response::Status { projects } => projects.iter().any(|p| p.name == project),
-        Response::Error { message } => bail!("{message}"),
-        other => bail!("unexpected daemon response: {other:?}"),
-    };
-    if running {
+pub(crate) fn stop_if_running(project: &str) -> Result<()> {
+    if crate::running_projects()?.iter().any(|p| p.name == project) {
         crate::cmd_down(project)?;
     }
     Ok(())
@@ -105,10 +99,10 @@ fn managed_runtime_roots() -> Vec<PathBuf> {
         roots.push(r);
     }
     let system = PathBuf::from("/run/neals");
-    if Path::new(SYSTEM_DAEMON_SOCKET).exists() || system.is_dir() {
-        if !roots.iter().any(|r| r == &system) {
-            roots.push(system);
-        }
+    if (Path::new(SYSTEM_DAEMON_SOCKET).exists() || system.is_dir())
+        && !roots.iter().any(|r| r == &system)
+    {
+        roots.push(system);
     }
     roots
 }

@@ -67,7 +67,12 @@ struct Cli {
     )]
     _version: (),
 
-    #[arg(short = 'y', long = "yes", global = true, help = "Assume yes for confirmations")]
+    #[arg(
+        short = 'y',
+        long = "yes",
+        global = true,
+        help = "Assume yes for confirmations"
+    )]
     yes: bool,
 
     #[command(subcommand)]
@@ -128,10 +133,30 @@ Use -d/--detach to skip following logs."
         detach: bool,
     },
 
-    #[command(about = "Stop a running project")]
+    #[command(about = "Stop a running project, or every running project with --all")]
     Down {
+        #[arg(
+            help = "Project name",
+            add = ArgValueCompleter::new(complete_projects),
+            required_unless_present = "all",
+            conflicts_with = "all"
+        )]
+        project: Option<String>,
+        #[arg(long, help = "Stop every running project")]
+        all: bool,
+    },
+
+    #[command(
+        about = "Restart a project",
+        long_about = "\
+Stop the project if it is running, then start it like `neals up`.
+Use -d/--detach to skip following logs."
+    )]
+    Restart {
         #[arg(help = "Project name", add = ArgValueCompleter::new(complete_projects))]
         project: String,
+        #[arg(short = 'd', long = "detach", help = "Do not follow logs after start")]
+        detach: bool,
     },
 
     #[command(
@@ -149,10 +174,7 @@ confirmation (use -y/--yes to skip). Does not remove source, devenv.lock,\n\
         project: String,
         #[arg(long = "update", help = "Run devenv update before evaluation")]
         update: bool,
-        #[arg(
-            long = "hard",
-            help = "Wipe managed state (.devenv, .neals, runtime)"
-        )]
+        #[arg(long = "hard", help = "Wipe managed state (.devenv, .neals, runtime)")]
         hard: bool,
     },
 
@@ -339,9 +361,20 @@ fn run() -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Commands::Up { project, detach } => cmd_up(&project, detach),
-        Commands::Down { project } => {
+        Commands::Down {
+            project: Some(project),
+            ..
+        } => {
             cmd_down(&project)?;
             Ok(ExitCode::SUCCESS)
+        }
+        Commands::Down { project: None, .. } => {
+            cmd_down_all()?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Commands::Restart { project, detach } => {
+            refresh::stop_if_running(&project)?;
+            cmd_up(&project, detach)
         }
         Commands::Refresh {
             project,
@@ -620,24 +653,47 @@ pub(crate) fn cmd_down(project: &str) -> Result<()> {
     }
 }
 
-pub(crate) fn cmd_status() -> Result<()> {
+fn cmd_down_all() -> Result<()> {
+    let projects = running_projects()?;
+    if projects.is_empty() {
+        style::print_dim("no projects running");
+        return Ok(());
+    }
+    let failed = projects
+        .iter()
+        .filter(|project| {
+            cmd_down(&project.name)
+                .map_err(|err| style::print_err(&format!("{err:#}")))
+                .is_err()
+        })
+        .count();
+    if failed > 0 {
+        bail!("{failed} project(s) failed to stop");
+    }
+    Ok(())
+}
+
+pub(crate) fn running_projects() -> Result<Vec<neals_common::ProjectRuntime>> {
     match with_daemon(Request::Status)? {
-        Response::Status { projects } => {
-            if projects.is_empty() {
-                style::print_dim("no projects running");
-                return Ok(());
-            }
-            for (i, project) in projects.iter().enumerate() {
-                if i > 0 {
-                    println!();
-                }
-                println!("{}", format_project_status(project));
-            }
-            Ok(())
-        }
+        Response::Status { projects } => Ok(projects),
         Response::Error { message } => bail!("{message}"),
         other => bail!("unexpected response from nealsd: {other:?}"),
     }
+}
+
+pub(crate) fn cmd_status() -> Result<()> {
+    let projects = running_projects()?;
+    if projects.is_empty() {
+        style::print_dim("no projects running");
+        return Ok(());
+    }
+    for (i, project) in projects.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        println!("{}", format_project_status(project));
+    }
+    Ok(())
 }
 
 fn format_project_status(project: &neals_common::ProjectRuntime) -> String {
@@ -716,23 +772,20 @@ fn titled_border_line(name: &str, pid: u32, uptime: &str, width: usize) -> Strin
     let plain = format!(" {name} · pid {pid} · up {uptime} ");
     let inner = width.saturating_sub(2);
     let plain = if plain.chars().count() > inner {
-        plain.chars().take(inner.saturating_sub(1)).collect::<String>() + "…"
+        plain
+            .chars()
+            .take(inner.saturating_sub(1))
+            .collect::<String>()
+            + "…"
     } else {
         plain
     };
     let fill = inner.saturating_sub(plain.chars().count());
-    let label = format!(
-        " {} · pid {pid} · up {uptime} ",
-        style::accent(name)
-    );
-    let label = if plain.ends_with('…') {
-        plain
-    } else {
-        label
-    };
+    let label = format!(" {} · pid {pid} · up {uptime} ", style::accent(name));
+    let label = if plain.ends_with('…') { plain } else { label };
     let mut line = String::from("┌");
     line.push_str(&label);
-    line.extend(std::iter::repeat('─').take(fill));
+    line.extend(std::iter::repeat_n('─', fill));
     line.push('┐');
     line
 }
@@ -848,5 +901,34 @@ mod format_tests {
         assert!(text.contains("http://mailpit.demo.localhost/"));
         assert!(text.contains("none"));
         assert!(text.lines().last().unwrap().starts_with('└'));
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::{Cli, Commands};
+    use clap::Parser;
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(std::iter::once("neals").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn down_takes_a_project_or_all_but_not_both_or_neither() {
+        assert!(parse(&["down", "demo"]).is_ok());
+        assert!(parse(&["down", "--all"]).is_ok());
+        assert!(parse(&["down"]).is_err());
+        assert!(parse(&["down", "demo", "--all"]).is_err());
+    }
+
+    #[test]
+    fn restart_requires_a_project_and_accepts_detach() {
+        assert!(parse(&["restart"]).is_err());
+        match parse(&["restart", "demo", "-d"]).unwrap().command {
+            Commands::Restart { project, detach } => {
+                assert_eq!((project.as_str(), detach), ("demo", true))
+            }
+            _ => panic!("expected restart"),
+        }
     }
 }

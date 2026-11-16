@@ -25,4 +25,5 @@ pub fn call_daemon(request: &Request) -> Result<Response> {
         bail!("nealsd closed the connection without a response");
     }
     decode_response(&line)
+        .context("unreadable reply from nealsd; restart it if neals was just upgraded")
 }

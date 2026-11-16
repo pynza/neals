@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Minimal lifecycle smoke: up → nsenter (bash/exec path) → [exec] → down.
+# Minimal lifecycle smoke: up → nsenter (bash/exec path) → [exec] → restart → down → down --all.
 # Isolated XDG + NEALS_SOCKET; UP_CMD=sleep (no ferrari/devenv stack).
 set -euo pipefail
 
@@ -94,13 +94,23 @@ print(s.recv(65536).decode())
 ' "$1"
 }
 
-STATUS=$(ipc '{"Status":null}')
-NETNS_PID=$(python3 -c '
-import json,sys
-d=json.loads(sys.argv[1])
-ps=d["Status"]["projects"]
-print(next(p["netns_pid"] for p in ps if p["name"]=="smoke"))
-' "$STATUS")
+netns_pid() {
+  ipc '{"Status":null}' | python3 -c '
+import json, sys
+ps = json.load(sys.stdin)["Status"]["projects"]
+print(next(p["netns_pid"] for p in ps if p["name"] == "smoke"))
+'
+}
+
+assert_stopped() {
+  ipc '{"Status":null}' | python3 -c '
+import json, sys
+ps = json.load(sys.stdin)["Status"]["projects"]
+assert not any(p["name"] == "smoke" for p in ps), ps
+'
+}
+
+NETNS_PID=$(netns_pid)
 echo "    netns_pid=$NETNS_PID"
 [[ "$NETNS_PID" -gt 1 ]]
 
@@ -116,14 +126,18 @@ nsenter --user --net --mount --preserve-credentials -t "$NETNS_PID" -- \
 # Skip `neals exec` here: UP_CMD is a stub, not devenv shell.
 echo "==> skip neals exec (stub UP_CMD)"
 
+echo "==> restart"
+neals restart smoke -d
+RESTARTED_PID=$(netns_pid)
+[[ "$RESTARTED_PID" -gt 1 && "$RESTARTED_PID" != "$NETNS_PID" ]]
+
 echo "==> down"
 neals down smoke
-STATUS=$(ipc '{"Status":null}')
-python3 -c '
-import json,sys
-d=json.loads(sys.argv[1])
-ps=d["Status"]["projects"]
-assert not any(p["name"]=="smoke" for p in ps), ps
-' "$STATUS"
+assert_stopped
 
-echo "ok: up / nsenter(+exec) / down @ $WANT_VER"
+echo "==> down --all"
+neals up smoke -d
+neals down --all
+assert_stopped
+
+echo "ok: up / nsenter(+exec) / restart / down / down --all @ $WANT_VER"
