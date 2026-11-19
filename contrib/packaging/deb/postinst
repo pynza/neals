@@ -6,8 +6,11 @@ set -e
 
 COMPLETION_BEGIN="# >>> neals completions >>>"
 COMPLETION_END="# <<< neals completions <<<"
-STATE_DIR="/var/lib/neals"
+# Test seams: override to exercise the script without touching the host.
+STATE_DIR="${NEALS_STATE_DIR:-/var/lib/neals}"
 STATE_USER="$STATE_DIR/deb-user"
+SYSTEMCTL="${NEALS_SYSTEMCTL:-systemctl}"
+SYSTEMD_RUN_DIR="${NEALS_SYSTEMD_RUN_DIR:-/run/systemd/system}"
 
 ask_yes_no() {
   local prompt="$1" reply
@@ -74,47 +77,71 @@ setup_user_completion() {
 }
 
 enable_daemon() {
-  local user="$1" home nix_bin drop_in
-  if ! command -v systemctl >/dev/null 2>&1; then
-    echo "neals: systemctl not found; skip daemon enable" >&2
+  local user="$1" first_install="$2"
+  if ! command -v "$SYSTEMCTL" >/dev/null 2>&1; then
+    echo "neals: $SYSTEMCTL not found; skip daemon enable" >&2
     return 0
   fi
-  if [[ ! -d /run/systemd/system ]]; then
+  if [[ ! -d "$SYSTEMD_RUN_DIR" ]]; then
     echo "neals: systemd not active; skip daemon enable" >&2
     return 0
   fi
 
-  systemctl daemon-reload || true
+  "$SYSTEMCTL" daemon-reload || true
 
-  home="$(getent passwd "$user" | cut -d: -f6)"
-  nix_bin="$home/.nix-profile/bin"
-  drop_in="/etc/systemd/system/nealsd@${user}.service.d"
-  if [[ -x "$nix_bin/caddy" || -d "$nix_bin" ]]; then
-    install -d "$drop_in"
-    cat >"$drop_in/path.conf" <<EOF
-[Service]
-Environment=PATH=${nix_bin}:/usr/local/bin:/usr/bin:/bin
-EOF
+  # PATH for ~/.nix-profile is in the vendor unit (/home/%i); /etc drop-ins are
+  # left to the administrator and are never written or removed by the package.
+  # Enable only on first install: on upgrade respect an explicit `systemctl
+  # disable` — postinst's try-restart already refreshed a running daemon.
+  if [[ "$first_install" == "1" ]]; then
+    "$SYSTEMCTL" enable --now "nealsd@${user}.service"
   fi
-
-  systemctl enable --now "nealsd@${user}.service"
   # Host DNS: path unit watches /run/neals/hosts (written by nealsd) and merges /etc/hosts.
   if [[ -f /usr/lib/systemd/system/neals-hosts-sync.path ]]; then
-    systemctl enable --now neals-hosts-sync.path 2>/dev/null || true
+    if [[ "$first_install" == "1" ]]; then
+      "$SYSTEMCTL" enable --now neals-hosts-sync.path 2>/dev/null || true
+      echo "neals: enabled neals-hosts-sync.path (auto /etc/hosts aliases)"
+    fi
     # Pick up a fragment that already exists (reinstall / upgrade).
-    systemctl start neals-hosts-sync.service 2>/dev/null || true
-    echo "neals: enabled neals-hosts-sync.path (auto /etc/hosts aliases)"
+    "$SYSTEMCTL" start neals-hosts-sync.service 2>/dev/null || true
   fi
   mkdir -p "$STATE_DIR"
   echo "$user" >"$STATE_USER"
-  echo "neals: enabled nealsd@${user} (prefers :80, falls back if busy)"
+  if [[ "$first_install" == "1" ]]; then
+    echo "neals: enabled nealsd@${user} (prefers :80, falls back if busy)"
+  else
+    echo "neals: upgraded nealsd@${user} (enablement unchanged)"
+  fi
 }
 
 # deb: configure | rpm %post: 1=install, 2=upgrade
 case "$1" in
 configure|1|2)
-  if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
-    systemctl daemon-reload || true
+  # deb configure: $2 is the previous version (empty on first install, but also
+  # non-empty after `dpkg -r` + reinstall — postrm leaves a marker for that).
+  # rpm %post: 1=install, 2=upgrade.
+  FIRST_INSTALL=0
+  case "${1:-}" in
+    configure)
+      if [[ -z "${2:-}" || -f "$STATE_DIR/reinstall" ]]; then FIRST_INSTALL=1; fi
+      ;;
+    1) FIRST_INSTALL=1 ;;
+  esac
+  if [[ "$FIRST_INSTALL" == "1" ]]; then
+    rm -f "$STATE_DIR/reinstall"
+  fi
+
+  if command -v "$SYSTEMCTL" >/dev/null 2>&1 && [[ -d "$SYSTEMD_RUN_DIR" ]]; then
+    "$SYSTEMCTL" daemon-reload || true
+    # prerm no longer stops the daemon on upgrade: pick up the new binary in
+    # place. try-restart is a no-op if it was not running. Use the recorded
+    # user so unattended upgrades work without SUDO_USER in the environment.
+    if [[ -f "$STATE_USER" ]]; then
+      saved_user="$(cat "$STATE_USER" 2>/dev/null || true)"
+      if [[ -n "$saved_user" ]]; then
+        "$SYSTEMCTL" try-restart "nealsd@${saved_user}.service" 2>/dev/null || true
+      fi
+    fi
   fi
 
   USER_NAME="${SUDO_USER:-}"
@@ -131,8 +158,10 @@ configure|1|2)
   fi
 
   echo "neals: configuring for user ${USER_NAME}"
-  if ask_yes_no "Enable nealsd@${USER_NAME} (*.localhost; prefers :80), host DNS sync, and shell completion? [Y/n] "; then
-    enable_daemon "$USER_NAME"
+  action="Configure"
+  if [[ "$FIRST_INSTALL" == "1" ]]; then action="Enable"; fi
+  if ask_yes_no "$action nealsd@${USER_NAME} (*.localhost; prefers :80), host DNS sync, and shell completion? [Y/n] "; then
+    enable_daemon "$USER_NAME" "$FIRST_INSTALL"
     setup_user_completion "$USER_NAME"
     echo "neals: try: neals doctor"
   else

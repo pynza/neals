@@ -4,7 +4,8 @@ set -e
 
 COMPLETION_BEGIN="# >>> neals completions >>>"
 COMPLETION_END="# <<< neals completions <<<"
-STATE_DIR="/var/lib/neals"
+# Test seams: override to exercise the script without touching the host.
+STATE_DIR="${NEALS_STATE_DIR:-/var/lib/neals}"
 STATE_USER="$STATE_DIR/deb-user"
 
 cleanup_user_state() {
@@ -24,7 +25,8 @@ cleanup_user_state() {
       fi
     done
   fi
-  rm -rf "/etc/systemd/system/nealsd@${user}.service.d"
+  # /etc/systemd/system/nealsd@*.service.d/ is admin-owned (systemctl edit):
+  # leave it untouched even on purge, so upgrades never lose local overrides.
 }
 
 # deb purge | rpm %postun with $1=0 (last package removed)
@@ -37,6 +39,11 @@ purge)
   fi
   ;;
 remove)
+  # deb `dpkg -r` (not purge): the next install gets `postinst configure <old
+  # version>` — indistinguishable from an upgrade by $2 alone. prerm just
+  # disabled the daemon, so mark this as a reinstall for postinst to re-enable.
+  mkdir -p "$STATE_DIR"
+  : >"$STATE_DIR/reinstall"
   if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload 2>/dev/null || true
   fi

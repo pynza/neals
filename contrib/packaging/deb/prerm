@@ -1,29 +1,37 @@
 #!/bin/bash
 # Stop/disable the instance enabled by postinst (dpkg prerm / rpm %preun).
+# Upgrades are intentionally a no-op: postinst reloads and try-restarts the
+# daemon, and /etc systemd drop-ins belong to the administrator and are never
+# removed here.
 set -e
 
-STATE_USER="/var/lib/neals/deb-user"
+# Test seams: override to exercise the script without touching the host.
+STATE_DIR="${NEALS_STATE_DIR:-/var/lib/neals}"
+STATE_USER="$STATE_DIR/deb-user"
+SYSTEMCTL="${NEALS_SYSTEMCTL:-systemctl}"
 
 # deb: remove|upgrade|deconfigure | rpm %preun: 0=uninstall, >=1=upgrade
 case "$1" in
-remove|upgrade|deconfigure|0|1)
-  if command -v systemctl >/dev/null 2>&1; then
-    if [[ -f "$STATE_USER" ]]; then
-      user="$(cat "$STATE_USER")"
-      if [[ -n "$user" ]]; then
-        # Stop daemon first so it writes an empty hosts mirror, then apply once
-        # to clear the neals block from /etc/hosts before disabling the path unit.
-        systemctl stop "nealsd@${user}.service" 2>/dev/null || true
-        systemctl start neals-hosts-sync.service 2>/dev/null || true
-        systemctl disable "nealsd@${user}.service" 2>/dev/null || true
-        rm -rf "/etc/systemd/system/nealsd@${user}.service.d"
+  upgrade|1)
+    # Leave the daemon and its drop-ins alone; postinst does try-restart.
+    ;;
+  remove|deconfigure|0)
+    if command -v "$SYSTEMCTL" >/dev/null 2>&1; then
+      if [[ -f "$STATE_USER" ]]; then
+        user="$(cat "$STATE_USER")"
+        if [[ -n "$user" ]]; then
+          # Stop daemon first so it writes an empty hosts mirror, then apply once
+          # to clear the neals block from /etc/hosts before disabling the path unit.
+          "$SYSTEMCTL" stop "nealsd@${user}.service" 2>/dev/null || true
+          "$SYSTEMCTL" start neals-hosts-sync.service 2>/dev/null || true
+          "$SYSTEMCTL" disable "nealsd@${user}.service" 2>/dev/null || true
+        fi
       fi
+      "$SYSTEMCTL" disable --now neals-hosts-sync.path 2>/dev/null || true
+      "$SYSTEMCTL" stop neals-hosts-sync.service 2>/dev/null || true
+      "$SYSTEMCTL" daemon-reload 2>/dev/null || true
     fi
-    systemctl disable --now neals-hosts-sync.path 2>/dev/null || true
-    systemctl stop neals-hosts-sync.service 2>/dev/null || true
-    systemctl daemon-reload 2>/dev/null || true
-  fi
-  ;;
+    ;;
 esac
 
 exit 0

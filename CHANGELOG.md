@@ -6,6 +6,24 @@ any incompatible change between `neals` and `nealsd`.
 
 ## [Unreleased]
 
+### Fixed
+
+- deb/rpm upgrades no longer delete `/etc/systemd/system/nealsd@$USER.service.d/`:
+  local `systemctl edit` drop-ins (e.g. `NEALS_ALLOW_HOST_LOOPBACK=1`) now survive
+  upgrades and purge. `prerm` only stops/disables on real removal.
+- Packaged upgrades reload systemd and `try-restart` a running `nealsd@$USER`, so
+  the new binary is used without a manual restart (running projects stop). Enablement
+  is left untouched: `systemctl disable` survives upgrades; only first installs
+  enable the daemon and hosts-sync units. `dpkg -r` + reinstall re-enables them
+  (dpkg passes `configure <old-version>` there, so postrm leaves a reinstall marker).
+
+### Changed
+
+- The nix profile path is now in the shipped unit (`/home/%i/.nix-profile/bin`);
+  post-install no longer writes a `path.conf` drop-in in `/etc`. For homes outside
+  `/home`, add your own drop-in.
+- CI: `contrib/smoke-upgrade.sh` asserts drop-in preservation and restart behavior.
+
 ## [1.0.0] - 2026-11-16
 
 First stable release.

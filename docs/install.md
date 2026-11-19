@@ -61,15 +61,19 @@ Unit details: [contrib/systemd/README.md](../contrib/systemd/README.md).
 
 ### Upgrading
 
-`neals` and `nealsd` talk over a versioned protocol. Packages do not restart a
-running daemon, so after an upgrade restart it (this stops running projects):
+`neals` and `nealsd` talk over a versioned protocol. On upgrade the package
+reloads systemd and `try-restart`s `nealsd@$USER` **if it was running**, so the
+new binary is used right away (this stops running projects). If it was stopped,
+it stays stopped: `sudo systemctl start "nealsd@$USER"` when you need it. The
+enabled/disabled state is left untouched: an explicit `systemctl disable`
+survives the upgrade, and only the first install enables the units. Local
+`systemctl edit` drop-ins are preserved across upgrades.
+
+Ad-hoc daemons have no package hooks; restart those by hand:
 
 ```bash
-sudo systemctl restart "nealsd@$USER"   # system daemon
-pkill nealsd                            # ad-hoc daemon; auto-starts on next use
+pkill nealsd   # auto-starts on next use
 ```
-
-Until then `neals` reports the mismatch instead of guessing.
 
 ## Manual install (Arch / tarball / from source)
 
@@ -89,11 +93,13 @@ sudo systemctl enable --now "nealsd@$USER"
 sudo systemctl enable --now neals-hosts-sync.path
 ```
 
-If `caddy` is only under nix, add a PATH drop-in (`systemctl edit nealsd@$USER`):
+The unit already includes `/home/%i/.nix-profile/bin` on `PATH` for nix-provided
+`caddy`. If your home is not under `/home`, add a drop-in
+(`systemctl edit nealsd@$USER`) with the real path:
 
 ```ini
 [Service]
-Environment=PATH=%h/.nix-profile/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/var/home/USER/.nix-profile/bin:/usr/local/bin:/usr/bin:/bin
 ```
 
 Autocomplete: bash via `/usr/share/bash-completion/completions/neals` if you

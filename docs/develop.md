@@ -40,3 +40,9 @@ CLEAR_DIST=1 ./contrib/packaging/package-linux.sh 0.1.0
 # .deb only (faster): DEB_ONLY=1 ./contrib/packaging/package-linux.sh
 # build + install like a release: ./contrib/packaging/install-local.sh
 ```
+
+`contrib/smoke-upgrade.sh` exercises the maintainer scripts with a stub
+`systemctl` and a temporary state dir: it checks that admin drop-ins survive
+upgrade/removal, that `postinst` issues `try-restart` without re-enabling on
+upgrade, and that first install / `dpkg -r` + reinstall still enable the units.
+CI runs it alongside the lifecycle smoke.

@@ -40,7 +40,10 @@ sudo systemctl enable --now "nealsd@$USER"
 sudo systemctl enable --now neals-hosts-sync.path
 ```
 
-If `caddy` lives under nix (`~/.nix-profile/bin`), add a drop-in:
+The unit puts `/home/%i/.nix-profile/bin` on `PATH`, so nix-provided `caddy`
+works without an override. (`%h` is unusable here: in system units it resolves
+to `/root` and ignores `User=`.) If the home directory is not under `/home`,
+add a drop-in with the real path:
 
 ```bash
 sudo systemctl edit "nealsd@$USER"
@@ -48,8 +51,14 @@ sudo systemctl edit "nealsd@$USER"
 
 ```ini
 [Service]
-Environment=PATH=%h/.nix-profile/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/var/home/USER/.nix-profile/bin:/usr/local/bin:/usr/bin:/bin
 ```
+
+Drop-ins under `/etc/systemd/system/nealsd@$USER.service.d/` belong to the
+administrator: packages never write or delete them, so they survive upgrades.
+On upgrade the package reloads systemd and `try-restart`s the daemon if it was
+running, picking up the new binary in place; only first installs enable units,
+so an explicit `systemctl disable` is respected.
 
 Guest → host loopback (IDE debuggers, callbacks to host `127.0.0.1`) is
 **off** by default. To allow `10.0.2.2` from inside a project:

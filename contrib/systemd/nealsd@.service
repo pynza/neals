@@ -18,9 +18,12 @@ RuntimeDirectoryMode=0700
 Environment=XDG_RUNTIME_DIR=/run
 
 Environment=NEALS_MODE=system
+# Per-user nix tools (caddy, devenv) without writing to /etc on install/upgrade.
+# %h is /root for system units and ignores User=, so use the instance name.
+Environment=PATH=/home/%i/.nix-profile/bin:/usr/local/bin:/usr/bin:/bin
 # Caddy port: prefer :80, else :2015+, via nealsd (do not pin NEALS_CADDY_HTTP_ADDR here)
 
-# Override path: systemctl edit nealsd@USER
+# Override path: systemctl edit nealsd@USER (drop-ins survive package upgrades)
 ExecStart=/usr/local/bin/nealsd
 Restart=on-failure
 RestartSec=2
