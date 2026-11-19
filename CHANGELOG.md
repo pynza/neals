@@ -4,7 +4,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/). The IPC protocol version is bumped on
 any incompatible change between `neals` and `nealsd`.
 
-## [Unreleased]
+## [1.0.1] - 2026-11-19
 
 ### Fixed
 
